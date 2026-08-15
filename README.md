@@ -18,6 +18,9 @@ broader Principal Architect / FDE-track experience with agent orchestration on k
 - `k3s/buzz/` — Buzz relay helm values (chart: `buzz-0.1.7`)
 - `hermes/` — Hermes agent config example (`config.yaml.example`, `.env.example`)
 - `openclaw/` — OpenClaw's Buzz channel config example
+- `observability/` — Prometheus + Grafana (docker-compose) scraping vLLM's
+  `/metrics`, using vLLM's own official dashboard (12 panels: TTFT, TPOT, throughput,
+  KV cache usage, prefix cache hit rate, request queue depth)
 - `DECISIONS.md` — real footguns hit and how they were resolved
 
 ## What's NOT here
@@ -72,3 +75,24 @@ that would normally hold one of those uses a placeholder — see `*.example` fil
 `kubectl port-forward -n buzz svc/buzz 3939:3000` exposes the relay to both native
 processes. **Port 3000 is the app port — the service also exposes 8080 as a health
 probe only; forwarding to 8080 gets a 404 on every real API call.**
+
+## Observability
+
+```
+cd observability && docker compose up -d
+```
+
+Prometheus (`localhost:9090`) scrapes vLLM's `/metrics` via `host.docker.internal:8000`
+— works out of the box against a native-process vLLM, no adaptation needed from
+vLLM's own upstream example. Grafana (`localhost:3000`, default `admin`/`admin`)
+needs the Prometheus datasource and dashboard added once per fresh container:
+
+```bash
+curl -s -X POST http://admin:admin@localhost:3000/api/datasources \
+  -H "Content-Type: application/json" \
+  -d '{"name":"Prometheus","type":"prometheus","url":"http://prometheus:9090","access":"proxy","isDefault":true}'
+```
+
+then import `observability/grafana-vllm-dashboard.json` via Grafana's dashboard
+import UI (or `/api/dashboards/import`), pointing its `DS_PROMETHEUS` input at the
+datasource UID returned above.
