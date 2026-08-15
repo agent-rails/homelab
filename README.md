@@ -17,7 +17,10 @@ broader Principal Architect / FDE-track experience with agent orchestration on k
   cluster DNS, plus Open WebUI helm values
 - `k3s/buzz/` — Buzz relay helm values (chart: `buzz-0.1.7`)
 - `hermes/` — Hermes agent config example (`config.yaml.example`, `.env.example`)
-- `openclaw/` — OpenClaw's Buzz channel config example
+- `openclaw/` — OpenClaw's Buzz channel config example, plus
+  `skills/llmfit-advisor.SKILL.md` (copy of the installed skill — real source:
+  [AlexsJones/llmfit](https://github.com/AlexsJones/llmfit)) that lets the agent
+  recommend hardware-fit local models via `llmfit recommend --json`
 - `observability/` — Prometheus + Grafana (docker-compose) scraping vLLM's
   `/metrics`, using vLLM's own official dashboard (12 panels: TTFT, TPOT, throughput,
   KV cache usage, prefix cache hit rate, request queue depth)

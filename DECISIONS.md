@@ -103,6 +103,24 @@ the whole time; the only way to find this was reading the plugin's own TypeScrip
 source. Fix: always pair `groupPolicy: "allowlist"` with an explicit
 `groupAllowFrom` list of hex pubkeys (see `openclaw/buzz-channel-config.example.json`).
 
+## OpenClaw 2026.8.1-beta.1: DB schema self-inconsistency (confirmed unconditional)
+
+Follow-up to the entry below: re-tested by fully wiping `openclaw.sqlite` and doing
+a clean process restart (not `SIGUSR1` in-place). Gateway came up fine and stayed
+healthy for hours — but on the *next* restart, `openclaw doctor --fix` and a fresh
+`openclaw gateway run` both refused to start, reporting schema 7 on a database that
+had been empty **minutes** earlier. This rules out `doctor --fix` as the cause (it
+wasn't run in between) — something in the gateway's own ordinary runtime writes
+schema-7-shaped state within minutes of a cold start, while every startup path
+(`gateway run`, `doctor`) enforces schema ≤6. This is not an occasional/timing bug;
+treat any process restart on this build as having a real chance of permanently
+wedging the local state DB. Worked around each time the same way (wipe
+`openclaw.sqlite`, accept the lost session/task-flow state), but stopped chasing
+root cause — genuinely unfixable without an upstream release. The llmfit-advisor
+skill itself (see below) was proven correct independent of this: ran
+`llmfit recommend --json` directly and got the exact structured output the skill's
+own `SKILL.md` documents the agent as consuming.
+
 ## OpenClaw 2026.8.1-beta.1: DB schema self-inconsistency
 
 Installed build writes/expects a `openclaw.sqlite` state DB at schema version 7 in
