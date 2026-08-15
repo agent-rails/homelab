@@ -21,6 +21,9 @@ broader Principal Architect / FDE-track experience with agent orchestration on k
 - `observability/` — Prometheus + Grafana (docker-compose) scraping vLLM's
   `/metrics`, using vLLM's own official dashboard (12 panels: TTFT, TPOT, throughput,
   KV cache usage, prefix cache hit rate, request queue depth)
+- `eval/` — small regression harness: runs a fixed prompt set (arithmetic,
+  instruction-following, tool-call triggering) against two OpenAI-compatible
+  endpoints and diffs baseline vs candidate, nonzero exit on regression
 - `DECISIONS.md` — real footguns hit and how they were resolved
 
 ## What's NOT here
@@ -96,3 +99,18 @@ curl -s -X POST http://admin:admin@localhost:3000/api/datasources \
 then import `observability/grafana-vllm-dashboard.json` via Grafana's dashboard
 import UI (or `/api/dashboards/import`), pointing its `DS_PROMETHEUS` input at the
 datasource UID returned above.
+
+## Eval harness (model/quant swap regression)
+
+```
+python3 eval/eval_harness.py \
+  --baseline http://localhost:8000/v1 --baseline-model Qwen/Qwen3-0.6B \
+  --candidate http://localhost:8001/v1 --candidate-model mlx-community/Qwen3-0.6B-4bit
+```
+
+Run this before "promoting" any model or quantization swap. Real result the first
+time this ran against a 4-bit MLX quant of the same model: text quality was fine
+(even slightly better on one case), but **tool-calling silently broke** — the
+quantized model stopped emitting `tool_calls` entirely on two cases the base model
+passed. Exit code is nonzero on any baseline-passed/candidate-failed case, so this
+is CI-gateable.

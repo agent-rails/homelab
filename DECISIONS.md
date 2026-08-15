@@ -3,6 +3,48 @@
 Real problems hit while building this stack, and how they were actually resolved.
 No hypotheticals — every entry below was reproduced live.
 
+## Prefix caching shows no benefit under low, sequential load
+
+Ran an A/B (`--enable-prefix-caching` vs `--no-enable-prefix-caching`) with 5
+sequential requests sharing a 512-token system prompt. Cache hits were real and
+confirmed via `/metrics` (1920/2543 tokens hit-cached), but steady-state latency
+was statistically indistinguishable between the two runs (~288ms vs ~304ms avg).
+At this scale — small model, short prompt, one request at a time, no batching
+contention — prefill is already cheap enough that skipping it doesn't move the
+needle. The real win only showed up conceptually once concurrency entered the
+picture (`vllm bench serve` load test): that's where continuous batching and
+prefix caching actually earn their keep. Left caching enabled anyway (no downside)
+rather than concluding "it doesn't work" from a benchmark shape too small to show it.
+
+## `vllm bench serve`'s `prefix_repetition` dataset doesn't reliably produce cache hits
+
+Ran the built-in load-test tool with `--dataset-name prefix_repetition` (5 shared
+prefixes across 50 requests, concurrency 10) — real throughput/latency numbers came
+back clean, but `vllm:prefix_cache_queries_total` stayed at exactly 0 for the whole
+run, despite a hand-rolled script (identical literal system prompts) proving the
+caching mechanism itself works minutes earlier. Root cause not fully chased, but the
+dataset generator (`PrefixRepetitionRandomDataset` in
+`vllm/benchmarks/datasets/datasets.py`) builds prefixes from random token IDs via a
+decode→re-encode round trip that the code itself tracks as lossy
+(`token_mismatch_total`) — combined with `openai-chat` backend re-tokenizing after
+chat-template wrapping, the "shared" prefix likely isn't landing as byte-identical
+tokens server-side. Not a vLLM caching bug — a benchmark-tool quirk worth knowing
+before trusting its cache-hit numbers specifically (its throughput/latency numbers
+are still real and trustworthy).
+
+## Qwen3's reasoning mode silently eats an eval harness's token budget
+
+First eval harness run against Qwen3-0.6B (and its 4-bit MLX quant) showed both
+baseline and candidate failing identically on arithmetic and tool-calling cases —
+looked like a broken harness. Real cause: Qwen3 emits `<think>...</think>` reasoning
+tokens by default, and a 64-token budget was entirely consumed by the reasoning
+trace before any real answer or tool call. Fixed by passing
+`chat_template_kwargs: {"enable_thinking": false}` and raising `max_tokens` to 128.
+After the fix, the harness produced a genuinely informative result: the 4-bit quant
+stopped emitting tool calls entirely on two cases the base model passed — a real,
+silent capability regression from quantization that text-only quality checks would
+have missed entirely.
+
 ## k8s `command` vs Docker Compose `command`
 
 k8s pod spec `command` overrides the image's Docker `ENTRYPOINT` entirely (unlike
