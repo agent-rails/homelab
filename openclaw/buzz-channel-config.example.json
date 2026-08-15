@@ -1,0 +1,20 @@
+{
+  "channels": {
+    "buzz": {
+      "enabled": true,
+      "relayUrl": "ws://localhost:3939",
+      "privateKey": "nsec1...",
+      "groupPolicy": "allowlist",
+      "groupAllowFrom": [
+        "<hex-pubkey-of-owner>",
+        "<hex-pubkey-of-hermes-agent>"
+      ],
+      "groups": {
+        "<channel-uuid>": {
+          "enabled": true,
+          "requireMention": false
+        }
+      }
+    }
+  }
+}

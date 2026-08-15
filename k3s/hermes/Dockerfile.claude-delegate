@@ -1,0 +1,9 @@
+FROM hermes-agent:local
+
+# Adds the real Claude Code CLI (first-party npm package) so Hermes can
+# delegate coding tasks to it via the bundled claude-code skill (terminal
+# tool -> claude -p ...). Auth is CLAUDE_CODE_OAUTH_TOKEN (from
+# `claude setup-token` on the host), mounted as a k8s Secret at runtime --
+# never a harvested interactive-session OAuth token.
+RUN npm install -g @anthropic-ai/claude-code && \
+    npm cache clean --force

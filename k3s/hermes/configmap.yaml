@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: hermes-config
+  namespace: ai-infra
+data:
+  config.yaml: |
+    model:
+      provider: custom
+      base_url: http://host.orb.internal:11434/v1
+      default: gpt-oss:20b
+      api_key: ollama
+    toolsets:
+      - hermes-cli
+      - terminal

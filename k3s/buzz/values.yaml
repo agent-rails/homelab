@@ -1,0 +1,11 @@
+image:
+  tag: latest
+minio:
+  enabled: true
+postgresql:
+  enabled: true
+redis:
+  enabled: true
+quickstart: true
+relayUrl: ws://localhost:3939
+ownerPubkey: <hex-pubkey-of-owner>

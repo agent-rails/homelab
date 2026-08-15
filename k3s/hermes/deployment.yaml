@@ -1,0 +1,77 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hermes-gateway
+  namespace: ai-infra
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: hermes-gateway
+  template:
+    metadata:
+      labels:
+        app: hermes-gateway
+    spec:
+      # Own PVC-backed HERMES_HOME, separate from the native host install's
+      # ~/.hermes -- avoids two writers (host process + pod) sharing one
+      # SQLite state.db over a bind mount.
+      initContainers:
+        - name: seed-config
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              if [ ! -f /opt/data/config.yaml ]; then
+                cp /config-seed/config.yaml /opt/data/config.yaml
+                echo "seeded config.yaml"
+              else
+                echo "config.yaml already present, leaving as-is"
+              fi
+          volumeMounts:
+            - name: data
+              mountPath: /opt/data
+            - name: config-seed
+              mountPath: /config-seed
+              readOnly: true
+      containers:
+        - name: gateway
+          image: hermes-agent:claude-delegate
+          imagePullPolicy: IfNotPresent
+          # k8s `command` overrides the image ENTRYPOINT (unlike Docker
+          # Compose's `command`, which only overrides CMD). Leaving
+          # `command` unset preserves entrypoint-dispatch.sh -> /init ->
+          # s6-overlay supervision (cont-init.d chown, profile reconcile);
+          # `args` becomes entrypoint-dispatch.sh's argv, same as compose's
+          # `command: ["gateway", "run"]`. Setting `command` here instead
+          # would skip s6 init entirely (source: giovannirco/agentic-homelab
+          # hermes-vm-vs-kubernetes.md chart-lessons #1-2).
+          args: ["gateway", "run"]
+          env:
+            - name: HERMES_UID
+              value: "10000"
+            - name: HERMES_GID
+              value: "10000"
+            - name: CLAUDE_CODE_OAUTH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: hermes-claude-token
+                  key: token
+          volumeMounts:
+            - name: data
+              mountPath: /opt/data
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "512Mi"
+            limits:
+              cpu: "2"
+              memory: "2Gi"
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: hermes-data
+        - name: config-seed
+          configMap:
+            name: hermes-config

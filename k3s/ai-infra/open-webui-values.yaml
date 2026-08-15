@@ -1,0 +1,7 @@
+ollama:
+  enabled: false
+ollamaUrls:
+  - http://ollama-host.ai-infra.svc.cluster.local:11434
+openaiBaseApiUrl: http://vllm-host.ai-infra.svc.cluster.local:8000/v1
+persistence:
+  enabled: false
