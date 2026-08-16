@@ -28,6 +28,9 @@ broader Principal Architect / FDE-track experience with agent orchestration on k
   instruction-following, tool-call triggering) against two OpenAI-compatible
   endpoints and diffs baseline vs candidate, nonzero exit on regression
 - `DECISIONS.md` — real footguns hit and how they were resolved
+- `DESIGN.md` — architecture, DevSecOps threat model, and rollout plan for a
+  LiteLLM Proxy fronting vLLM/Ollama (not yet implemented; llm-d was considered
+  and rejected as oversized for a single-GPU homelab)
 
 ## What's NOT here
 
