@@ -197,6 +197,133 @@ endpoint like the `ollama` provider), reuse OpenClaw's `vllm` provider type
 rather than hand-rolling a custom one -- the custom-provider auth path is a real
 config-schema gap for this exact shape.
 
+## LiteLLM Proxy (Phase 2) shipped: dedicated Postgres, per-consumer virtual keys; three real footguns, two DESIGN deviations
+
+Implemented DESIGN.md's Phase 2: a dedicated single-replica `litellm-postgres`
+(Deployment + PVC + its own Secret, NOT shared with `buzz-postgresql`), wired
+`DATABASE_URL` into `litellm-secrets`, minted four scoped virtual keys via
+`/key/generate`, and cut all four consumers off the master key. Three real
+surprises surfaced during rollout, plus two intentional deviations from the
+DESIGN doc's own examples.
+
+**LiteLLM OOMKilled on its first DB-connected boot at Phase 1's 1Gi limit.**
+Connecting to Postgres makes LiteLLM run `prisma migrate deploy` on boot (146
+migrations on a fresh DB), which spins up a Prisma migration engine (Rust
+query-engine + Node) whose memory spike blew past the `1Gi` ceiling that
+master-key-only Phase 1 fit inside comfortably. Real symptom: `exitCode: 137`,
+`reason: OOMKilled` roughly 106s into boot, crashlooping. Bumped the limit
+`1Gi -> 2Gi`. Same lesson as Phase 1's `256Mi -> 1Gi`: a resource estimate is a
+guess until the *actual* code path (here, DB migration) runs once.
+
+**The liveness probe SIGKILLed the proxy mid-migration before OOM was even the
+issue.** Before the memory fix, the first failure was a different one: liveness
+`initialDelaySeconds: 10` / `periodSeconds: 15` began probing `:4000` while
+LiteLLM was still applying migrations and had not yet bound the port. The probe's
+`connection refused` tripped the restart threshold and SIGKILLed the container
+(exit 137, `reason: Error`) into a crashloop — the app never got to finish
+booting. Fix: added a `startupProbe` (`failureThreshold: 30`, `periodSeconds: 5`
+= ~150s budget) on `/health/readiness`, which gates liveness/readiness until the
+first successful probe, so boot+migration completes before liveness is evaluated
+at all. Both surprises were real and sequential — the startupProbe fixed the
+premature kill, then the 2Gi bump fixed the OOM underneath it.
+
+**The in-cluster Hermes pod was silently bypassing the proxy entirely.** The
+`hermes-gateway` Deployment seeds `config.yaml` into its PVC via an initContainer
+that copies only "if not present." That PVC still held a pre-Phase-1 config
+pointing straight at raw Ollama (`http://host.orb.internal:11434/v1`,
+`api_key: ollama`) — the committed `configmap.yaml`'s proxy-routed form
+(`base_url: litellm-proxy...:4000/v1`, `key_env`) had never overwritten it,
+because the seed step skips an existing file. So the committed manifest claimed
+"routes through the proxy" while the live pod did not. Applying the ConfigMap
+alone would not have fixed it; the Phase 2 cutover required overwriting
+`/opt/data/config.yaml` in the PVC directly, then rolling the Deployment. Worth
+knowing for any PVC-seeded config in this repo: the committed ConfigMap is the
+seed, not the source of truth for an already-initialized pod.
+
+**Port-forward on `:4000` was stale after the proxy rollout.** Same documented
+`kubectl port-forward` footgun as elsewhere in this stack: the existing forward
+was bound to the pre-rollout pod and returned `http=000` (connection refused)
+once the new pod replaced it. Restarted the forward against the Service; it
+landed on the new pod. Consumers on `localhost:4000` (Hermes native, OpenClaw)
+depend on this forward and inherit the same manual-restart-on-rollout treatment.
+
+**Salt key format became load-bearing here, and held.** Phase 1's README noted
+`LITELLM_SALT_KEY` must be base64 (`openssl rand -base64 32`), not hex; Phase 2
+is where that actually matters — the salt is the Fernet key LiteLLM uses to
+encrypt each virtual key before storing it in Postgres. The live salt (44-char
+base64) encrypted and stored all four minted keys with zero salt/Fernet errors,
+and scope enforcement verified live: a key scoped to `ollama-default` returns
+`200` on that model and `403` on `vllm-default`/`gpt-oss-default`, with
+`/v1/models` filtered to its scope. That 403 is the concrete blast-radius
+reduction DESIGN.md §3.4 promised, now proven rather than asserted.
+
+**Deviation 1 — actual per-consumer scoping differs from DESIGN's examples.**
+DESIGN.md's illustrative text said "Hermes and OpenClaw get only
+`ollama-default`." The real configs disagree: both Hermes consumers (native +
+in-cluster) run `default: gpt-oss-default`, and OpenClaw's `vllm` provider is
+configured for model id `ollama-default`. Following DESIGN's actual *rule*
+("scoped to only the `model_list` entries that consumer actually needs") over its
+example, the keys are scoped: hermes-native -> `gpt-oss-default`,
+hermes-incluster -> `gpt-oss-default`, openclaw -> `ollama-default`, eval-harness
+-> all three (it validates every route). The examples were illustrative; the rule
+is least-privilege to real need.
+
+**Deviation 2 — renamed the consumer key env var.** Leaving a scoped virtual key
+in a variable literally named `LITELLM_MASTER_KEY` would be a landmine (a reader
+would think the consumer holds the admin credential) and would leave the string
+"master key" in consumer config. Renamed the consumer-side var to
+`LITELLM_VIRTUAL_KEY` (Hermes `config.yaml` `key_env`; the in-cluster Deployment's
+env name, sourced from a per-consumer secret key `LITELLM_VIRTUAL_KEY_HERMES`).
+This makes DESIGN's "master key no longer handed to any consumer" success
+criterion literally grep-checkable, and it is: the master key string is absent
+from `~/.hermes/.env`, `~/.hermes/config.yaml`, the in-cluster pod env, and
+`~/.openclaw/openclaw.json`. The master key is retained only in `litellm-secrets`
+as the proxy's own admin credential.
+
+**OpenClaw cut over cleanly on the first restart — contrary to the feared
+instability.** On `2026.8.1-beta.2` the gateway restarted with
+`VLLM_API_KEY=<openclaw virtual key>` and reached `ready` + Buzz-connected +
+`agent model: vllm/ollama-default` on the first attempt, with no new
+`logs/stability/*startup_failed*` dump (the schema-7-vs-6 wedge documented below
+did not reproduce on beta.2). Verified the key is actually in use, not just the
+process healthy: forced an `openclaw agent -m ...` turn and confirmed three
+requests attributed to the `openclaw` token in `LiteLLM_SpendLogs` (joined on
+`token`) — proving it authenticated with its own scoped key, not the master key
+and not the empty-key failure mode from the Phase 1 custom-provider story.
+Caveat carried forward: OpenClaw's `VLLM_API_KEY` is still injected out-of-band
+(exported into the gateway's shell env at launch, reparented to launchd — no
+persistent dotfile), identical to how the master key was injected in Phase 1.
+Restarting OpenClaw without re-exporting the virtual key will break its model
+path; there is no committed launch script to make this durable.
+
+**That caveat is now closed.** OpenClaw has real, native `.env` support --
+`stateEnvPath: path.join(resolveStateDir(process.env), ".env")` in its own
+`dotenv-*.js` -- it auto-loads `~/.openclaw/.env` on every `gateway run`,
+before this session ever discovered it (confirmed by reading the installed
+package's own dist source, not guessed). Wrote `VLLM_API_KEY=<key>` there;
+restarted the gateway with zero manual export, zero shell profile edit. It
+authenticated cleanly on the first attempt.
+
+One real snag along the way: LiteLLM's OSS tier does not support
+`/key/&lt;token&gt;/regenerate` ("Regenerating Virtual Keys is an Enterprise
+feature") -- and a `/key/generate` response's plaintext key is shown exactly
+once, never retrievable again. The original openclaw key from the Phase 2
+build above was only ever exported into a live shell's env, never persisted
+anywhere durable, so its plaintext was already gone by the time this fix
+started. Worked around by `key/delete`-ing the orphaned alias and minting a
+genuinely new key under the same `openclaw` alias -- a real, permanent
+rotation, not a recovery. Anyone hitting the same "I need this key's value
+again" problem on OSS LiteLLM should expect the same: delete and re-mint, key
+regeneration is not available without an Enterprise license.
+
+Also persisted the new key to `litellm-secrets` as
+`LITELLM_VIRTUAL_KEY_OPENCLAW`, matching the `LITELLM_VIRTUAL_KEY_HERMES`
+pattern, even though OpenClaw's own consumption path reads it from
+`~/.openclaw/.env` rather than a `secretKeyRef` (OpenClaw runs as a native
+macOS process here, not a pod) -- the k8s Secret is the durable source of
+truth for what the real value is, the `.env` file is just where OpenClaw
+itself needs it to sit.
+
 ## OpenClaw beta.2 (npm, real release) resolves the schema bug; small local models narrate tool calls instead of executing them
 
 Upgrading from the hand-built source checkout to the real published `openclaw@2026.8.1-beta.2` npm release (one patch beyond the broken `beta.1`) resolved the schema self-inconsistency below cleanly: `[gateway] ready` on first try, zero schema errors across multiple restarts, Buzz connected on first attempt instead of needing a reconnect loop. This is the real, sustainable fix — track the published release channel, not a hand-built source tree. Confirmed via `npm view openclaw dist-tags`: OpenClaw has a genuine stable/production channel (`latest: 2026.7.1-2`) separate from `beta`; this stack is on beta only because the Buzz plugin requires `>=2026.7.2`, which has not shipped as a stable release yet. The instability documented below is a consequence of that specific version-floor requirement, not evidence OpenClaw itself is broadly unstable software.

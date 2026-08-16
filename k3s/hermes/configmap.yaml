@@ -9,7 +9,7 @@ data:
       provider: custom
       base_url: http://litellm-proxy.ai-infra.svc.cluster.local:4000/v1
       default: gpt-oss-default
-      key_env: LITELLM_MASTER_KEY
+      key_env: LITELLM_VIRTUAL_KEY
     toolsets:
       - hermes-cli
       - terminal

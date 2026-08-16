@@ -58,11 +58,15 @@ spec:
                 secretKeyRef:
                   name: hermes-claude-token
                   key: token
-            - name: LITELLM_MASTER_KEY
+            # Phase 2: in-cluster Hermes holds its own scoped virtual key
+            # (gpt-oss-default only), not the proxy admin master key. Pod env
+            # var name matches configmap `key_env: LITELLM_VIRTUAL_KEY`; the
+            # secret key is per-consumer (LITELLM_VIRTUAL_KEY_HERMES).
+            - name: LITELLM_VIRTUAL_KEY
               valueFrom:
                 secretKeyRef:
                   name: litellm-secrets
-                  key: LITELLM_MASTER_KEY
+                  key: LITELLM_VIRTUAL_KEY_HERMES
           volumeMounts:
             - name: data
               mountPath: /opt/data
