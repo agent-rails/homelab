@@ -161,9 +161,11 @@ Scoping: hermes-native and hermes-incluster -> `gpt-oss-default`; openclaw ->
 the master key: Hermes uses `key_env: LITELLM_VIRTUAL_KEY` (native: value in
 `~/.hermes/.env`; in-cluster: `secretKeyRef` -> `litellm-secrets`
 key `LITELLM_VIRTUAL_KEY_HERMES`), OpenClaw's bundled `vllm` provider reads
-`VLLM_API_KEY` (export the openclaw virtual key before `openclaw gateway run`).
+`VLLM_API_KEY` from `~/.openclaw/.env` (`VLLM_API_KEY=<openclaw virtual key>`) --
+OpenClaw auto-loads that file at every `openclaw gateway run`, so this survives
+restarts with no manual export, no shell profile edit, and no launchd env var.
 The master key is retained only as the proxy admin credential for
-`/key/generate` and `/key/block`.
+`/key/generate` and `/key/block`, and never lives in any consumer's config.
 
 Rollback: if Postgres has an incident, point the proxy back at master-key auth
 (proxy-side config only — every consumer already targets the proxy `base_url`).

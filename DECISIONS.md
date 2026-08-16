@@ -296,6 +296,34 @@ persistent dotfile), identical to how the master key was injected in Phase 1.
 Restarting OpenClaw without re-exporting the virtual key will break its model
 path; there is no committed launch script to make this durable.
 
+**That caveat is now closed.** OpenClaw has real, native `.env` support --
+`stateEnvPath: path.join(resolveStateDir(process.env), ".env")` in its own
+`dotenv-*.js` -- it auto-loads `~/.openclaw/.env` on every `gateway run`,
+before this session ever discovered it (confirmed by reading the installed
+package's own dist source, not guessed). Wrote `VLLM_API_KEY=<key>` there;
+restarted the gateway with zero manual export, zero shell profile edit. It
+authenticated cleanly on the first attempt.
+
+One real snag along the way: LiteLLM's OSS tier does not support
+`/key/&lt;token&gt;/regenerate` ("Regenerating Virtual Keys is an Enterprise
+feature") -- and a `/key/generate` response's plaintext key is shown exactly
+once, never retrievable again. The original openclaw key from the Phase 2
+build above was only ever exported into a live shell's env, never persisted
+anywhere durable, so its plaintext was already gone by the time this fix
+started. Worked around by `key/delete`-ing the orphaned alias and minting a
+genuinely new key under the same `openclaw` alias -- a real, permanent
+rotation, not a recovery. Anyone hitting the same "I need this key's value
+again" problem on OSS LiteLLM should expect the same: delete and re-mint, key
+regeneration is not available without an Enterprise license.
+
+Also persisted the new key to `litellm-secrets` as
+`LITELLM_VIRTUAL_KEY_OPENCLAW`, matching the `LITELLM_VIRTUAL_KEY_HERMES`
+pattern, even though OpenClaw's own consumption path reads it from
+`~/.openclaw/.env` rather than a `secretKeyRef` (OpenClaw runs as a native
+macOS process here, not a pod) -- the k8s Secret is the durable source of
+truth for what the real value is, the `.env` file is just where OpenClaw
+itself needs it to sit.
+
 ## OpenClaw beta.2 (npm, real release) resolves the schema bug; small local models narrate tool calls instead of executing them
 
 Upgrading from the hand-built source checkout to the real published `openclaw@2026.8.1-beta.2` npm release (one patch beyond the broken `beta.1`) resolved the schema self-inconsistency below cleanly: `[gateway] ready` on first try, zero schema errors across multiple restarts, Buzz connected on first attempt instead of needing a reconnect loop. This is the real, sustainable fix — track the published release channel, not a hand-built source tree. Confirmed via `npm view openclaw dist-tags`: OpenClaw has a genuine stable/production channel (`latest: 2026.7.1-2`) separate from `beta`; this stack is on beta only because the Buzz plugin requires `>=2026.7.2`, which has not shipped as a stable release yet. The instability documented below is a consequence of that specific version-floor requirement, not evidence OpenClaw itself is broadly unstable software.
