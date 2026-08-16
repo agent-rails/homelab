@@ -129,6 +129,45 @@ in) works against any OpenAI-compatible backend, LiteLLM included. Point its
 master key — see DECISIONS.md for the full story of why a custom `models.providers.litellm`
 entry silently sends an empty API key and this is the real fix.
 
+## LiteLLM Proxy (Phase 2 — Postgres + per-consumer virtual keys)
+
+```
+kubectl apply -f k3s/ai-infra/litellm-postgres-pvc.yaml \
+  -f k3s/ai-infra/litellm-postgres-service.yaml \
+  -f k3s/ai-infra/litellm-postgres-deployment.yaml
+```
+
+Needs a `litellm-postgres-secrets` Secret first (see
+`k3s/ai-infra/litellm-postgres-secret.yaml.example`) — a dedicated single-replica
+Postgres, deliberately NOT shared with `buzz-postgresql` (DESIGN.md §4 rejected
+that coupling). Then add `DATABASE_URL` to the existing `litellm-secrets` Secret
+(placeholder in `litellm-secret.yaml.example`) and re-apply
+`litellm-deployment.yaml`. The proxy now runs `prisma migrate deploy` on boot; the
+`startupProbe` + `2Gi` memory limit exist specifically so the migration completes
+before liveness kills it and without OOM (see DECISIONS.md).
+
+Per-consumer virtual keys are minted against the master key and scoped to only the
+models each consumer needs:
+
+```bash
+MK=$(kubectl get secret litellm-secrets -n ai-infra -o jsonpath='{.data.LITELLM_MASTER_KEY}' | base64 -d)
+curl -s http://localhost:4000/key/generate -H "Authorization: Bearer $MK" \
+  -H "Content-Type: application/json" \
+  -d '{"key_alias":"openclaw","models":["ollama-default"]}'
+```
+
+Scoping: hermes-native and hermes-incluster -> `gpt-oss-default`; openclaw ->
+`ollama-default`; eval-harness -> all three. Each consumer holds its own key, not
+the master key: Hermes uses `key_env: LITELLM_VIRTUAL_KEY` (native: value in
+`~/.hermes/.env`; in-cluster: `secretKeyRef` -> `litellm-secrets`
+key `LITELLM_VIRTUAL_KEY_HERMES`), OpenClaw's bundled `vllm` provider reads
+`VLLM_API_KEY` (export the openclaw virtual key before `openclaw gateway run`).
+The master key is retained only as the proxy admin credential for
+`/key/generate` and `/key/block`.
+
+Rollback: if Postgres has an incident, point the proxy back at master-key auth
+(proxy-side config only — every consumer already targets the proxy `base_url`).
+
 ## Eval harness (model/quant swap regression)
 
 ```
