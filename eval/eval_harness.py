@@ -13,7 +13,7 @@ import sys
 import urllib.request
 
 
-def call_model(base_url, model, case):
+def call_model(base_url, model, case, api_key=None):
     payload = {
         "model": model,
         "messages": [{"role": "user", "content": case["prompt"]}],
@@ -25,10 +25,14 @@ def call_model(base_url, model, case):
         payload["tools"] = case["tools"]
         payload["tool_choice"] = "auto"
 
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
     req = urllib.request.Request(
         f"{base_url}/chat/completions",
         data=json.dumps(payload).encode(),
-        headers={"Content-Type": "application/json"},
+        headers=headers,
     )
     with urllib.request.urlopen(req, timeout=60) as resp:
         body = json.loads(resp.read())
@@ -52,11 +56,11 @@ def check(case, text, tool_calls):
     return failures
 
 
-def run_suite(base_url, model, cases):
+def run_suite(base_url, model, cases, api_key=None):
     results = {}
     for case in cases:
         try:
-            text, tool_calls = call_model(base_url, model, case)
+            text, tool_calls = call_model(base_url, model, case, api_key=api_key)
             failures = check(case, text, tool_calls)
             results[case["id"]] = (len(failures) == 0, failures)
         except Exception as e:
@@ -71,15 +75,17 @@ def main():
     ap.add_argument("--candidate", required=True, help="candidate OpenAI-compatible base_url")
     ap.add_argument("--candidate-model", required=True)
     ap.add_argument("--prompts", default="prompts.json")
+    ap.add_argument("--baseline-api-key", default=None, help="Bearer token for the baseline endpoint")
+    ap.add_argument("--candidate-api-key", default=None, help="Bearer token for the candidate endpoint")
     args = ap.parse_args()
 
     cases = json.load(open(args.prompts))
 
     print(f"=== baseline: {args.baseline_model} @ {args.baseline} ===")
-    baseline_results = run_suite(args.baseline, args.baseline_model, cases)
+    baseline_results = run_suite(args.baseline, args.baseline_model, cases, api_key=args.baseline_api_key)
 
     print(f"=== candidate: {args.candidate_model} @ {args.candidate} ===")
-    candidate_results = run_suite(args.candidate, args.candidate_model, cases)
+    candidate_results = run_suite(args.candidate, args.candidate_model, cases, api_key=args.candidate_api_key)
 
     print("\n=== results ===")
     regressions = []

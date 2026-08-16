@@ -58,6 +58,11 @@ spec:
                 secretKeyRef:
                   name: hermes-claude-token
                   key: token
+            - name: LITELLM_MASTER_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: litellm-secrets
+                  key: LITELLM_MASTER_KEY
           volumeMounts:
             - name: data
               mountPath: /opt/data

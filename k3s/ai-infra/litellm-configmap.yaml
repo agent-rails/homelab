@@ -1,0 +1,29 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: litellm-config
+  namespace: ai-infra
+data:
+  config.yaml: |
+    model_list:
+      - model_name: ollama-default
+        litellm_params:
+          model: ollama/llama3.1:8b
+          api_base: http://ollama-host:11434
+          extra_headers:
+            Host: "localhost"
+      - model_name: vllm-default
+        litellm_params:
+          model: openai/Qwen/Qwen3-0.6B
+          api_base: http://vllm-host:8000/v1
+          api_key: "not-needed"
+      - model_name: gpt-oss-default
+        litellm_params:
+          model: ollama/gpt-oss:20b
+          api_base: http://ollama-host:11434
+          extra_headers:
+            Host: "localhost"
+    litellm_settings:
+      callbacks: ["prometheus"]
+    general_settings:
+      master_key: os.environ/LITELLM_MASTER_KEY

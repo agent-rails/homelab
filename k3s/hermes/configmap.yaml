@@ -7,9 +7,9 @@ data:
   config.yaml: |
     model:
       provider: custom
-      base_url: http://host.orb.internal:11434/v1
-      default: gpt-oss:20b
-      api_key: ollama
+      base_url: http://litellm-proxy.ai-infra.svc.cluster.local:4000/v1
+      default: gpt-oss-default
+      key_env: LITELLM_MASTER_KEY
     toolsets:
       - hermes-cli
       - terminal

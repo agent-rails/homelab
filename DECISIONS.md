@@ -103,6 +103,72 @@ the whole time; the only way to find this was reading the plugin's own TypeScrip
 source. Fix: always pair `groupPolicy: "allowlist"` with an explicit
 `groupAllowFrom` list of hex pubkeys (see `openclaw/buzz-channel-config.example.json`).
 
+## LiteLLM Proxy (Phase 1) shipped and validated; two real integration bugs found and fixed, one deferred
+
+Implemented DESIGN.md's Phase 1: `litellm-proxy` Deployment + Service in `ai-infra`,
+fronting both `vllm-host` and `ollama-host` behind one OpenAI-compatible endpoint
+with master-key auth. Two real bugs surfaced and were fixed during rollout, one
+real OpenClaw-specific limitation was found and deferred rather than chased:
+
+**Resource limits underestimated.** The design doc's own estimate (`128Mi`/`256Mi`,
+"small FastAPI process") was wrong in practice -- the pod was immediately
+OOMKilled (`exitCode: 137`, `reason: OOMKilled`). Bumped to `512Mi`/`1Gi`. A design
+document's resource estimate is a guess until it's actually run once.
+
+**Ollama rejects the ExternalName-mapped Host header with a silent 403.** This is
+separate from `OLLAMA_ORIGINS`/CORS (which controls the browser `Origin` header) --
+Ollama has an independent, hardcoded check that only accepts `Host: localhost`,
+and it fails closed with an empty-body 403 and zero server-side log line. Routing
+through the `ollama-host` ExternalName service means the proxy's outbound request
+carries `Host: ollama-host`, which gets silently rejected. `OLLAMA_ORIGINS=*` does
+**not** fix this -- confirmed by setting it via `launchctl setenv` (which also
+required discovering the running Ollama was actually a `brew services`-managed
+launchd job, not the manually-`nohup`'d process I thought I'd restarted -- launchd
+won the race for the port every time). The real fix is `extra_headers: {Host:
+"localhost"}` in LiteLLM's `litellm_params` for the Ollama model entries, which
+LiteLLM does support and forwards correctly.
+
+**vLLM's single-worker "distributed" init can hang indefinitely on network state
+change.** After being idle across a laptop-sleep cycle, restarting vLLM produced
+a real, non-transient hang: `[c10d] The server socket on [::ffff:10.5.0.2]:PORT
+has timed out, will retry` repeating for 25+ minutes with no progress. vLLM's
+engine core always goes through `torch.distributed`'s rendezvous even at
+`tensor_parallel_size=1`, and it was binding to whatever IP
+`socket.gethostbyname(socket.gethostname())` resolved to (a `10.5.x.x`
+VPN-adjacent address) rather than loopback -- an address that had gone stale.
+Fixed with `VLLM_HOST_IP=127.0.0.1` to force the rendezvous onto loopback. Also
+found and killed stray orphaned child processes (a `resource_tracker` and a
+`socket`-holding worker) still bound to the old rendezvous port after the parent
+was killed -- `pkill -f "vllm serve"` alone did not clean these up.
+
+**Validated with the real eval harness, not just manual curl.** Added
+`--baseline-api-key`/`--candidate-api-key` flags to `eval_harness.py` (it never
+had auth support before, since every backend so far had been unauthenticated) and
+ran the harness with `--baseline` on the direct backend and `--candidate` through
+the proxy, for both Ollama and vLLM routes. Zero regressions either way --
+concrete proof the proxy path is behaviorally transparent, exactly the check
+DESIGN.md's Phase 1 rollout plan specified.
+
+**OpenClaw's `--model <provider>/<id>` CLI syntax does not accept an arbitrary
+custom provider key for a proxy target.** Added a `litellm` entry under
+`models.providers` in `openclaw.json` (same shape Hermes uses successfully via
+its `custom` provider type). Direct HTTP calls to the proxy work fine and were
+verified with real curl. But invoking it through OpenClaw
+(`openclaw agent --model litellm/ollama-default`) fails with `Error: Persisted
+plugin install records are invalid`, while the exact same command with no
+`--model` override (falling back to the already-configured `ollama/llama3.1:8b`)
+completes a real, successful agent turn. The error text references "plugin
+install records," and `litellm` is not one of the 15 actually-loaded plugins
+(`anthropic, bonjour, browser, buzz, canvas, cua-computer, device-pair,
+file-transfer, linux-canvas, linux-node, memory-core, ollama, spike-hook-logger,
+talk-voice, xai`) -- best-supported hypothesis is that OpenClaw's provider
+resolution for the `--model` flag conflates "provider key" with "plugin name" and
+produces a misleading error rather than a clean "unknown provider." Not chased
+further -- real, disclosed gap. The `litellm` provider config stays in
+`openclaw.json` (harmless, additive, doesn't affect the working `ollama` path,
+confirmed by testing the default path still works after adding it) as a marker
+for whoever picks this back up.
+
 ## OpenClaw beta.2 (npm, real release) resolves the schema bug; small local models narrate tool calls instead of executing them
 
 Upgrading from the hand-built source checkout to the real published `openclaw@2026.8.1-beta.2` npm release (one patch beyond the broken `beta.1`) resolved the schema self-inconsistency below cleanly: `[gateway] ready` on first try, zero schema errors across multiple restarts, Buzz connected on first attempt instead of needing a reconnect loop. This is the real, sustainable fix — track the published release channel, not a hand-built source tree. Confirmed via `npm view openclaw dist-tags`: OpenClaw has a genuine stable/production channel (`latest: 2026.7.1-2`) separate from `beta`; this stack is on beta only because the Buzz plugin requires `>=2026.7.2`, which has not shipped as a stable release yet. The instability documented below is a consequence of that specific version-floor requirement, not evidence OpenClaw itself is broadly unstable software.
