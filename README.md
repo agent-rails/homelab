@@ -29,8 +29,8 @@ broader Principal Architect / FDE-track experience with agent orchestration on k
   endpoints and diffs baseline vs candidate, nonzero exit on regression
 - `DECISIONS.md` — real footguns hit and how they were resolved
 - `DESIGN.md` — architecture, DevSecOps threat model, and rollout plan for a
-  LiteLLM Proxy fronting vLLM/Ollama (not yet implemented; llm-d was considered
-  and rejected as oversized for a single-GPU homelab)
+  LiteLLM Proxy fronting vLLM/Ollama (Phase 1 implemented, see `k3s/ai-infra/litellm-*`;
+  llm-d was considered and rejected as oversized for a single-GPU homelab)
 
 ## What's NOT here
 
@@ -105,6 +105,29 @@ curl -s -X POST http://admin:admin@localhost:3000/api/datasources \
 then import `observability/grafana-vllm-dashboard.json` via Grafana's dashboard
 import UI (or `/api/dashboards/import`), pointing its `DS_PROMETHEUS` input at the
 datasource UID returned above.
+
+## LiteLLM Proxy (Phase 1)
+
+```
+kubectl apply -f k3s/ai-infra/litellm-configmap.yaml -f k3s/ai-infra/litellm-deployment.yaml -f k3s/ai-infra/litellm-service.yaml
+kubectl port-forward -n ai-infra svc/litellm-proxy 4000:4000
+```
+
+Needs a `litellm-secrets` Secret first (see `k3s/ai-infra/litellm-secret.yaml.example`) —
+**both** `LITELLM_MASTER_KEY` and `LITELLM_SALT_KEY` must be `openssl rand -base64 32`
+format specifically (not hex) or LiteLLM's own key-cache decryption fails with a
+misleading `No connected db.` error. Single OpenAI-compatible endpoint fronting
+`vllm-host` and `ollama-host`, model aliases `ollama-default`, `vllm-default`,
+`gpt-oss-default`.
+
+Hermes routes through it natively (`~/.hermes/config.yaml` `base_url` +
+`key_env: LITELLM_MASTER_KEY`, real key in `.env`). OpenClaw routes through it too,
+but **not** via a hand-rolled custom provider entry — OpenClaw's own bundled `vllm`
+provider (`openai-completions` API, real `VLLM_API_KEY` auth wiring already built
+in) works against any OpenAI-compatible backend, LiteLLM included. Point its
+`baseUrl` at `http://127.0.0.1:4000/v1` and set `VLLM_API_KEY` to the LiteLLM
+master key — see DECISIONS.md for the full story of why a custom `models.providers.litellm`
+entry silently sends an empty API key and this is the real fix.
 
 ## Eval harness (model/quant swap regression)
 

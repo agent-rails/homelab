@@ -25,6 +25,11 @@ spec:
                 secretKeyRef:
                   name: litellm-secrets
                   key: LITELLM_MASTER_KEY
+            - name: LITELLM_SALT_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: litellm-secrets
+                  key: LITELLM_SALT_KEY
           volumeMounts:
             - name: config
               mountPath: /app/config.yaml

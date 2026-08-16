@@ -149,25 +149,53 @@ the proxy, for both Ollama and vLLM routes. Zero regressions either way --
 concrete proof the proxy path is behaviorally transparent, exactly the check
 DESIGN.md's Phase 1 rollout plan specified.
 
-**OpenClaw's `--model <provider>/<id>` CLI syntax does not accept an arbitrary
-custom provider key for a proxy target.** Added a `litellm` entry under
-`models.providers` in `openclaw.json` (same shape Hermes uses successfully via
-its `custom` provider type). Direct HTTP calls to the proxy work fine and were
-verified with real curl. But invoking it through OpenClaw
-(`openclaw agent --model litellm/ollama-default`) fails with `Error: Persisted
-plugin install records are invalid`, while the exact same command with no
-`--model` override (falling back to the already-configured `ollama/llama3.1:8b`)
-completes a real, successful agent turn. The error text references "plugin
-install records," and `litellm` is not one of the 15 actually-loaded plugins
-(`anthropic, bonjour, browser, buzz, canvas, cua-computer, device-pair,
-file-transfer, linux-canvas, linux-node, memory-core, ollama, spike-hook-logger,
-talk-voice, xai`) -- best-supported hypothesis is that OpenClaw's provider
-resolution for the `--model` flag conflates "provider key" with "plugin name" and
-produces a misleading error rather than a clean "unknown provider." Not chased
-further -- real, disclosed gap. The `litellm` provider config stays in
-`openclaw.json` (harmless, additive, doesn't affect the working `ollama` path,
-confirmed by testing the default path still works after adding it) as a marker
-for whoever picks this back up.
+**OpenClaw's `--model <provider>/<id>` CLI override has a real, separate bug from
+config-driven model selection.** Added a `litellm` entry under `models.providers`
+in `openclaw.json` (same shape Hermes uses successfully via its `custom` provider
+type). Direct HTTP calls to the proxy work fine, verified with real curl.
+Invoking it via `openclaw agent --model litellm/ollama-default` fails with
+`Error: Persisted plugin install records are invalid` -- traced to
+`requireLoadablePluginInstallRecordState` in
+`src/plugins/installed-plugin-index-record-reader.ts`, called from
+`loadInstalledPluginIndexInstallRecords`, itself invoked (per
+`missing-configured-plugin-install.candidates.ts` and
+`provider-install-catalog.ts`) as part of a plugin-install-catalog lookup that
+`--model`'s override path triggers but normal config-driven resolution does not.
+Confirmed by isolation: setting the exact same `litellm/ollama-default` value as
+`agents.defaults.model.primary` instead of passing `--model` bypasses this
+error entirely and reaches the real LLM call. Root cause not fully chased inside
+that catalog-lookup path (the raw `installed_plugin_index` SQLite row is `{}`,
+valid; `PRAGMA integrity_check` passes) -- confirmed fresh-process-safe (not an
+in-memory cache issue) but not further isolated.
+
+**Real, separate, second bug found past that, and fully fixed.** Once routed
+through `agents.defaults.model.primary` (bypassing the `--model` bug above), the
+request reached LiteLLM and got a real `400` from LiteLLM's own
+`user_api_key_auth()`: `No connected db.` -- a documented, known-misleading
+LiteLLM message (BerriAI/litellm#2532, #4880) that in LiteLLM's own auth code
+means "no valid credential was recognized," not an actual database requirement.
+Confirmed via LiteLLM's own `--detailed_debug` request log: the failing request
+arrived with `'api_key': ''` -- OpenClaw was sending an empty key, regardless of
+whether `apiKey` in `openclaw.json` was set to a literal `sk-...` value or an
+env-var-name marker. Traced the real cause: a hand-rolled custom provider entry
+(`models.providers.litellm`, `api: "openai-completions"`) never gets real
+credential wiring in OpenClaw -- that's not a bug so much as an unsupported
+shape. OpenClaw's own bundled `vllm` extension
+(`extensions/vllm/index.ts`, real source, already npm-shipped in
+`2026.8.1-beta.2`) exists specifically for "local/self-hosted
+OpenAI-compatible server," built on the plugin-SDK's
+`defineSelfHostedOpenAICompatibleProvider()` helper, which *does* wire
+`VLLM_API_KEY` through to the outbound request correctly. Since LiteLLM is
+genuinely OpenAI-compatible, pointing that already-bundled `vllm` provider's
+`baseUrl` at `http://127.0.0.1:4000/v1` (instead of a raw vLLM instance) and
+setting `VLLM_API_KEY` to the LiteLLM master key works with zero new code --
+no plugin needed to be written. Verified with a real agent turn: clean,
+structured, valid tool calls, zero auth errors, full round trip through
+OpenClaw -> `vllm` provider -> LiteLLM proxy -> Ollama -> `llama3.1:8b`. Lesson:
+when a provider needs real credentialed auth (not just an unauthenticated local
+endpoint like the `ollama` provider), reuse OpenClaw's `vllm` provider type
+rather than hand-rolling a custom one -- the custom-provider auth path is a real
+config-schema gap for this exact shape.
 
 ## OpenClaw beta.2 (npm, real release) resolves the schema bug; small local models narrate tool calls instead of executing them
 
