@@ -330,6 +330,43 @@ Upgrading from the hand-built source checkout to the real published `openclaw@20
 
 Separately: tried three different local models (`deepseek-r1:8b`, `llama3.1:8b`, and implicitly `muse-glimmer:30b-mlx` via the earlier stall) as the primary agent model through OpenClaw's Ollama integration. All three, when asked to use the llmfit-advisor skill, narrated an intended tool call as plaintext (`[[toolname(args)]]`, referencing OpenClaw's own AGENTS.md convention) instead of completing a real structured tool call or actually executing it. No server-side error in the gateway log — the request completes successfully from OpenClaw's perspective, the model just doesn't follow through. This is distinct from (and didn't reproduce) the `eval_harness.py` finding that a 4-bit MLX quant lost tool-calling via vLLM's dedicated `--tool-call-parser hermes` — that was through vLLM's OpenAI-compatible endpoint with a purpose-built parser; this is through Ollama's native tool support via OpenClaw's own agent loop, a different code path entirely, and evidently a less reliable one for small local models. Not chased to root cause — real, disclosed limitation of running small local models as OpenClaw's primary agent model today, not a config mistake we found and fixed.
 
+## Tool-narration bug root-caused: small local models emit fake tool-call JSON that OpenClaw's own repair grammar doesn't recognize; both documented mitigations make it worse
+
+Followed up on the entry above with a real, captured reproduction and a source-level root cause, using the exact same live-agent-tool-call pattern used elsewhere in this repo (real `openclaw agent` turn against the running gateway, real logs, no guessing).
+
+**Minimal reproduction (no skill, no tools needed).** Against the live production default agent (`agents.defaults.model.primary: vllm/ollama-default`, i.e. `llama3.1:8b` via the LiteLLM proxy — the actual day-to-day config from the Phase 1/2 work above), sent the single most trivial prompt possible:
+
+```
+openclaw agent --agent main --message "Reply with exactly: ok" --json
+```
+
+Instead of replying `ok`, the model's entire visible reply was a raw JSON object impersonating a tool call, with zero real tool calls made (`toolSummary` absent from the response envelope):
+
+```
+{ "type": "function", "name": "exec", "parameters": {"command": "/approve", "ask": "ok"}}
+```
+
+Repeated on the same session, next turn: a different fabricated JSON envelope, `{"type": "function", "name": "write", "parameters": {"path": "MEMORY.md", "content": "[User: Mon 2023-01-29 11:30 GMT.]..."}}` — again zero real tool calls, a wrong/fabricated date, and content unrelated to the prompt. 100% reproducible, unrelated to the llmfit-advisor skill or any particular tool surface — this is the model's baseline behavior on the config already in production use.
+
+**Richer reproduction (llmfit-advisor skill, matching the entry above).** Same `openclaw agent` pattern, `ollama/llama3.1:8b` as primary, prompted to use llmfit-advisor. Captured via `openclaw sessions export-trajectory` and the raw `transcript_events` SQLite table (`~/.openclaw/agents/main/agent/openclaw-agent.sqlite`) rather than guessed:
+
+1. Model calls the real `sessions_spawn` tool to delegate the check to a subagent. Tool result comes back `"status": "accepted"` with an explicit instruction: *"do NOT call sessions_list... wait for runtime completion events... only answer after completion events for ALL required children arrive."*
+2. Model immediately ignores that instruction and replies to the user: *"I have checked and recommended a local model... This model will be applied for further interactions"* — narrating the check as already complete when the subagent has barely started.
+3. Same session then spawns two more redundant subagents (contradicting its own "I'll wait" narration), runs two `web_search` calls that both no-op (`"Skipped due to queued user message"`), then — instead of a real tool call — emits a fake tool call as **visible markdown-fenced text**: `` ```{"name": "exec", "parameters": {"cmd": [...run.js...]}}``` ``.
+4. It eventually does make a real, structured `exec` tool call — but with the wrong parameter name (`cmd` instead of the schema's required `command`; confirmed against `docs/tools/exec.md`), so it fails validation: `Validation failed for tool "exec": command: must have required properties command`.
+5. With zero real data in hand, the final answer fabricates specific hardware specs and a fit score verbatim copied from its own child subagent's equally-fabricated report (which had made the identical mistake one level down): `"Local hardware detected: CPU: 12 cores @ 3.2 GHz, RAM: 64 GB DDR4-3200... Fit score: 95%."` — a two-level hallucination chain, not derived from any real `llmfit` output.
+
+**Root cause, read from OpenClaw's own bundled source, not guessed.** `dist/src-Rlms7fwG.js` (`packages/tool-call-repair`) is a real, dedicated module that scans assistant text for exactly this failure mode — plaintext tool calls from providers whose native tool-calling is unreliable — and promotes recognized ones into real executed tool calls (release notes confirm Ollama is an explicit target: *"Repaired plain-text tool calls from LM Studio, xAI, and Ollama now emit a final completion event"*, `docs/releases/2026.7.1.md`). But its grammar (`scanXmlishToolCall`, `scanPlainTextJsonToolCall`) only recognizes specific prefixed syntaxes: `<function=name>...</function>`, `[name]`, `[tool:name]`, or a Harmony-channel/bracket-prefixed JSON blob. A bare, unprefixed JSON object shaped like `{"type": "function", "name": ..., "parameters": {...}}` — what `llama3.1:8b` actually emits — matches none of them, so it passes straight through as literal visible text instead of being repaired, executed, or even stripped from display.
+
+**Both of OpenClaw's own documented mitigations were tried live and made it worse, not better** (`docs/providers/ollama.md`, "Lean local model profile"):
+
+- `agents.entries.main.experimental.localModelLean: true` — re-ran the llmfit-advisor reproduction: real tool-call failure rate went from partial to **100% (4/4 calls failed)**, and the model still narrated a fake tool call (`{"name": "tool_call", "parameters": {"args":{},"id":"llmfit-advisor"}}` — not even a real tool name) as its final answer.
+- `models.providers.ollama.models[llama3.1:8b].compat.supportsTools: false` — this is meant to trigger OpenClaw's own built-in guard (`buildModelToolsUnavailablePrompt` in `dist/model-tool-support-DIQSEumC.js`: *"Do not claim that you ran commands... say they are unavailable"*). Re-ran the reproduction: the model ignored the guard completely and fabricated two entirely nonexistent model names ("Meta Llama 2 (5B)", "LLaMA Base (13B)") with zero tool calls made at all — worse confabulation than with tools enabled.
+
+Both were reverted; the live config (`~/.openclaw/openclaw.json`, not committed to this repo — see README's "What's NOT here") is back to its original state, verified with `openclaw config validate`.
+
+**This is a confirmed, open upstream issue, not something fixable from this repo's side.** [`openclaw/openclaw#49876`](https://github.com/openclaw/openclaw/issues/49876), "Cron sessions deliver hallucinated output instead of failing cleanly when tool calls fail," is open upstream and describes the identical failure class — models fabricating plausible-looking output and delivering it as real when a tool call fails or can't complete, across `gemini-2.0-flash` and `gemini-3-flash-preview` in that report. Same root problem (weak models confabulate under tool-loop pressure rather than failing honestly), different provider. No local config change closes this; extending OpenClaw's own bundled `tool-call-repair` grammar to catch one more ad hoc JSON shape a given small model happens to invent would be whack-a-mole against an unbounded set of shapes, not a real fix, and it would live in vendored `node_modules` that a future `npm update` silently overwrites. Practical takeaway for this stack: don't use `llama3.1:8b` (or similarly-sized local models) as the primary tool-calling agent model for anything where a fabricated "success" narration could be mistaken for a real result — this sharpens, rather than reverses, the "real, disclosed limitation" conclusion two paragraphs up.
+
 ## OpenClaw 2026.8.1-beta.1: DB schema self-inconsistency (confirmed unconditional)
 
 Follow-up to the entry below: re-tested by fully wiping `openclaw.sqlite` and doing
