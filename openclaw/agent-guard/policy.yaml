@@ -1,0 +1,75 @@
+# agent-guard policy for OpenClaw's builtin tool surface (homelab, conservative first posture).
+#
+# Evaluated by agent-guard's engine via `guard check`, invoked per tool call from
+# the `before_tool_call` hook in before-tool-call.mjs. First matching rule wins.
+#
+# Tool names are OpenClaw's real canonical ids, read from the installed dist source
+# (2026.8.1-beta.2): exec, process, read, ls, grep, find, tree, write, edit,
+# apply_patch, move, delete, sessions_spawn, message, browser, web_fetch, web_search.
+#
+# default: deny -> anything not explicitly matched is denied (fail-closed). A tool
+# OpenClaw adds in a future release that this policy has never seen is denied, not
+# waved through.
+default: deny
+
+rules:
+  # 1. Hard deny: irreversible/destructive shell shapes. Highest priority so they
+  #    are blocked even though rule 4 would otherwise send exec to a human gate.
+  - id: deny-destructive-shell
+    decision: deny
+    tools: ["exec", "process"]
+    arg_patterns:
+      - "\\brm\\s+-[rf]{1,2}\\b"
+      - "(?i)\\bmkfs\\b"
+      - "(?i)\\bdd\\s+if="
+      - "(?i)\\bshutdown\\b"
+      - "(?i)\\breboot\\b"
+      - ">\\s*/dev/sd"
+      - ":\\(\\)\\s*\\{\\s*:\\|:"
+    reason: irreversible/destructive shell command; never allowed for a local agent
+
+  # 2. Hard deny: credential / auth-material paths in any mutating tool. Protects
+  #    the agent's own secret store (~/.openclaw holds the gateway auth token).
+  - id: deny-credential-paths
+    decision: deny
+    tools: ["write", "edit", "apply_patch", "exec", "process", "move", "delete"]
+    arg_patterns:
+      - "(?i)\\.ssh/"
+      - "(?i)\\.openclaw/"
+      - "(?i)id_(rsa|ed25519)"
+      - "(?i)/etc/(passwd|shadow|sudoers)"
+      - "(?i)\\.env\\b"
+    reason: touching credential/auth material is blocked
+
+  # 3. Read-only surface: allow. Low blast radius, the safe majority of a coding
+  #    agent's calls, kept friction-free.
+  - id: allow-read-only
+    decision: allow
+    tools: ["read", "ls", "grep", "find", "tree", "web_fetch", "web_search"]
+    reason: read-only surface, low blast radius
+
+  # 4. Non-destructive shell exec: gate to a human. Conservative first posture --
+  #    tighten to an allowlist (allow specific bins) once real usage is observed.
+  - id: gate-exec
+    decision: require_human
+    tools: ["exec", "process"]
+    reason: shell execution on the gateway host needs a human until an allowlist is tuned
+
+  # 5. Filesystem mutations: gate to a human.
+  - id: gate-fs-writes
+    decision: require_human
+    tools: ["write", "edit", "apply_patch", "move", "delete"]
+    reason: filesystem mutation needs a human in the conservative first posture
+
+  # 6. Sub-agent spawn: gate. This is the exact cascade vector in the documented
+  #    tool-narration bug -- a hallucinating model spawning redundant subagents.
+  - id: gate-subagent-spawn
+    decision: require_human
+    tools: ["sessions_spawn", "spawn_agent", "swarm"]
+    reason: spawning sub-agents is how a hallucinating local model cascades; gate it
+
+  # 7. Outbound side effects: gate.
+  - id: gate-outbound
+    decision: require_human
+    tools: ["message", "browser"]
+    reason: outbound message / browser action needs a human

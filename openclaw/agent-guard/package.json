@@ -1,0 +1,13 @@
+{
+  "name": "openclaw-plugin-agent-guard-gate",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "files": ["before-tool-call.mjs", "openclaw.plugin.json", "policy.yaml"],
+  "peerDependencies": {
+    "openclaw": ">=2026.8.1-beta.2"
+  },
+  "openclaw": {
+    "extensions": ["./before-tool-call.mjs"]
+  }
+}

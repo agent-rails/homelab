@@ -21,6 +21,10 @@ broader Principal Architect / FDE-track experience with agent orchestration on k
   `skills/llmfit-advisor.SKILL.md` (copy of the installed skill — real source:
   [AlexsJones/llmfit](https://github.com/AlexsJones/llmfit)) that lets the agent
   recommend hardware-fit local models via `llmfit recommend --json`
+- `openclaw/agent-guard/` — opt-in policy gate wiring
+  [agent-guard](https://github.com/agent-rails/agent-guard) in front of OpenClaw's real
+  tool dispatch via the `before_tool_call` hook (fail-closed, every decision audited).
+  Not wired into the live config; see that directory's README for how to opt in
 - `observability/` — Prometheus + Grafana (docker-compose) scraping vLLM's
   `/metrics`, using vLLM's own official dashboard (12 panels: TTFT, TPOT, throughput,
   KV cache usage, prefix cache hit rate, request queue depth)
@@ -169,6 +173,25 @@ The master key is retained only as the proxy admin credential for
 
 Rollback: if Postgres has an incident, point the proxy back at master-key auth
 (proxy-side config only — every consumer already targets the proxy `base_url`).
+
+## agent-guard tool gate (opt-in)
+
+```
+openclaw config set plugins.load.paths '["/Users/fo/dev/agent-rails/homelab/openclaw/agent-guard"]' --json
+openclaw config set plugins.entries.agent-guard-gate.enabled true
+openclaw gateway restart
+openclaw plugins inspect agent-guard-gate --runtime --json   # expect typedHooks[].name = before_tool_call
+```
+
+Routes every OpenClaw tool call through agent-guard's policy engine before dispatch,
+via the `before_tool_call` hook — the only seam that reaches OpenClaw's **builtin**
+tools (`exec`/`write`/...); the `guard mcp` wrapper only covers external `mcp.servers`.
+`default: deny`, read-only tools allowed, mutating tools human-gated, destructive
+shapes hard-denied, every decision audited. Requires agent-guard's `guard` CLI
+resolvable in the gateway env (`AGENT_GUARD_BIN` to point at a venv). Deliberately not
+wired into the live `~/.openclaw/openclaw.json` — see `openclaw/agent-guard/README.md`
+for the full story, the honest coverage limits, and DECISIONS.md for the two footguns
+hit while wiring it (manifest-driven discovery, live-gateway port collision).
 
 ## Eval harness (model/quant swap regression)
 

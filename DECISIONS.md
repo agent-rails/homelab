@@ -365,6 +365,76 @@ Repeated on the same session, next turn: a different fabricated JSON envelope, `
 
 Both were reverted; the live config (`~/.openclaw/openclaw.json`, not committed to this repo — see README's "What's NOT here") is back to its original state, verified with `openclaw config validate`.
 
+## agent-guard tool gate: first real policy gate in front of OpenClaw's tool dispatch
+
+Followed up on the tool-narration root cause with the actual mitigation this repo was
+groundwork for: putting [agent-guard](https://github.com/agent-rails/agent-guard)'s
+policy gate in front of OpenClaw's real tool dispatch. Landed as an opt-in capability
+in `openclaw/agent-guard/` (policy + hook plugin + manifest); the live daily-use config
+was deliberately not touched. Investigated from the installed dist source
+(`2026.8.1-beta.2`), not assumed.
+
+**The integration point is not the MCP wrapper.** agent-guard's advertised zero-code
+path (`guard mcp --policy p.yaml -- <server>`) wraps a stdio MCP server subprocess and
+guards its `tools/call` messages. But OpenClaw dispatches its **builtin** tools (`exec`,
+`write`, `edit`, `apply_patch`, `delete`, `sessions_spawn`, ...) internally — they never
+cross `mcp.servers` — so the MCP wrapper structurally cannot see the exact tool surface
+the narration bug fabricates. Confirmed by reading the tool-dispatch and MCP docs and
+the plugin SDK `.d.ts`: the only seam that reaches builtins is the **`before_tool_call`
+plugin hook** (`docs/plugins/hooks.md`). It fires on every tool call including builtins,
+returns `block` / `requireApproval` / `params`-rewrite, and its 15s timeout **fails
+closed** (rejects the call). The bundled `@openclaw/buzz` plugin was the reference for
+how a plugin is structured/loaded.
+
+**What actually works.** A standalone hook file (`before-tool-call.mjs`) that, per call,
+shells `guard check --policy policy.yaml --audit ... --json` and maps agent-guard's exit
+code (0 allow / 3 deny / 4 require_human) onto the hook result — deny→`block`,
+require_human→`requireApproval`, anything unexpected→`block` (fail closed, matching
+agent-guard's own `default: deny`). All policy/audit logic stays in agent-guard; the JS
+is a thin adapter and imports no `openclaw/*` package (a standalone file can't resolve
+that bare specifier — verified: `Cannot find package 'openclaw'` — and `definePluginEntry`
+is just a plain-object factory in the dist, so the default export is that shape by hand).
+
+**Two real footguns found while wiring it, both fixed.**
+
+- `plugins.load.paths` pointing at a bare `.mjs` **silently does not load** — the file
+  never appears in the runtime plugin list and its id is reported `plugin not found
+  (stale config entry ignored)`. OpenClaw's discovery is manifest-driven: it reads
+  `openclaw.plugin.json` before importing plugin runtime code. Fix: ship a plugin
+  **directory** with `openclaw.plugin.json` (+ `package.json` `openclaw.extensions`) and
+  point `load.paths` at the directory. After that, `plugins list` shows it `enabled` and
+  the gateway boots `14 plugins: agent-guard-gate, ...`.
+- The throwaway test gateway tried to bind the **default port 18789 — which the live
+  daily-use gateway already holds** (`EADDRINUSE`, `pid ... openclaw-gateway`). Ran the
+  throwaway on `--port 18999` with an isolated `OPENCLAW_STATE_DIR`; never used `--force`
+  (that kills the existing listener). The live gateway was untouched throughout.
+
+**Proven live, honestly bounded.** Against the throwaway instance: `openclaw plugins
+inspect agent-guard-gate --runtime --json` reports `typedHooks[0].name =
+before_tool_call`, `hookCount = 1` — OpenClaw's runtime really registered the gate into
+its tool-dispatch pipeline. The decision+audit path the hook delegates to is
+deterministic: `read`→allow(0), `exec rm -rf`→deny(3), `write`→require_human(4),
+`write .env`→deny(3, credential path), `sessions_spawn`→require_human(4),
+unknown-tool→deny(3, fail-closed default), one structured audit record per decision.
+
+**Not closed in-session: a model-driven tool call firing the hook end-to-end.**
+`llama3.1:8b` hard-fails any tool-enabled request through OpenClaw's agent loop
+(`LLM request failed`); plain inference and `openclaw infer model run` both return fine,
+but the moment tools are in the request the LLM call errors — the same small-local-model
+tool-calling wall documented above. The model never emits a tool call, so the registered
+hook correctly has nothing to fire on. Also hit beta gateway device-token pairing
+friction on the non-embedded CLI path. Both are model/harness-reliability gaps, not
+integration gaps — and the model unreliability is exactly what the gate backstops.
+
+**Coverage limit, not oversold.** The hook fires on tool calls that reach dispatch —
+including a fabricated call OpenClaw's own `tool-call-repair` promotes into a real
+executed one (the dangerous path). It does **not** fire on a pure hallucination OpenClaw
+only prints as text and never dispatches: that executes nothing, and its harm is
+misleading output — an output-integrity problem upstream of any tool-authz boundary.
+Per-agent velocity limiting (agent-guard's `VelocityLimiter`) is deferred: the per-call
+`guard check` subprocess resets the in-memory counters every call, so it needs a
+persistent `guard` sidecar to be meaningful — not forced into a shape it doesn't fit.
+
 **This is a confirmed, open upstream issue, not something fixable from this repo's side.** [`openclaw/openclaw#49876`](https://github.com/openclaw/openclaw/issues/49876), "Cron sessions deliver hallucinated output instead of failing cleanly when tool calls fail," is open upstream and describes the identical failure class — models fabricating plausible-looking output and delivering it as real when a tool call fails or can't complete, across `gemini-2.0-flash` and `gemini-3-flash-preview` in that report. Same root problem (weak models confabulate under tool-loop pressure rather than failing honestly), different provider. No local config change closes this; extending OpenClaw's own bundled `tool-call-repair` grammar to catch one more ad hoc JSON shape a given small model happens to invent would be whack-a-mole against an unbounded set of shapes, not a real fix, and it would live in vendored `node_modules` that a future `npm update` silently overwrites. Practical takeaway for this stack: don't use `llama3.1:8b` (or similarly-sized local models) as the primary tool-calling agent model for anything where a fabricated "success" narration could be mistaken for a real result — this sharpens, rather than reverses, the "real, disclosed limitation" conclusion two paragraphs up.
 
 ## OpenClaw 2026.8.1-beta.1: DB schema self-inconsistency (confirmed unconditional)
