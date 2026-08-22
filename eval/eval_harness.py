@@ -42,14 +42,39 @@ def call_model(base_url, model, case, api_key=None):
     return text, tool_calls
 
 
+def trajectory_metrics(tool_calls):
+    """Per-response trajectory signals. This harness is single-turn (one call, one
+    response), so these measure within-turn behavior, not a multi-step agent loop:
+    a real cross-turn trajectory tracker is a separate, bigger thing this doesn't do.
+
+    - tool_call_count: how many tool calls the model requested in this one response.
+    - repeated_call_count: how many of those are the same tool name called more than
+      once in the same response -- a within-turn thrash/redundancy signal.
+    """
+    tool_call_count = len(tool_calls)
+    seen = set()
+    repeated_call_count = 0
+    for name in tool_calls:
+        if name in seen:
+            repeated_call_count += 1
+        seen.add(name)
+    return {"tool_call_count": tool_call_count, "repeated_call_count": repeated_call_count}
+
+
 def check(case, text, tool_calls):
     failures = []
     if "must_contain" in case:
         if not any(s.lower() in text for s in case["must_contain"]):
             failures.append(f"expected one of {case['must_contain']!r} in response, got: {text[:120]!r}")
     if "must_call_tool" in case:
-        if case["must_call_tool"] not in tool_calls:
-            failures.append(f"expected tool call {case['must_call_tool']!r}, got calls: {tool_calls}")
+        expected = case["must_call_tool"]
+        if expected not in tool_calls:
+            failures.append(f"expected tool call {expected!r}, got calls: {tool_calls}")
+        elif tool_calls != [expected]:
+            failures.append(
+                f"tool selection imprecise: expected exactly [{expected!r}], got {tool_calls} "
+                f"(correct tool was called, but with extra/duplicate calls alongside it)"
+            )
     if "must_not_call_tool" in case:
         if case["must_not_call_tool"] in tool_calls:
             failures.append(f"expected NO call to {case['must_not_call_tool']!r}, but it was called")
@@ -62,9 +87,10 @@ def run_suite(base_url, model, cases, api_key=None):
         try:
             text, tool_calls = call_model(base_url, model, case, api_key=api_key)
             failures = check(case, text, tool_calls)
-            results[case["id"]] = (len(failures) == 0, failures)
+            metrics = trajectory_metrics(tool_calls)
+            results[case["id"]] = (len(failures) == 0, failures, metrics)
         except Exception as e:
-            results[case["id"]] = (False, [f"request error: {e}"])
+            results[case["id"]] = (False, [f"request error: {e}"], {"tool_call_count": 0, "repeated_call_count": 0})
     return results
 
 
@@ -89,22 +115,31 @@ def main():
 
     print("\n=== results ===")
     regressions = []
+    total_calls = 0
+    total_repeated = 0
     for case in cases:
         cid = case["id"]
-        b_pass, b_fail = baseline_results[cid]
-        c_pass, c_fail = candidate_results[cid]
+        b_pass, b_fail, b_metrics = baseline_results[cid]
+        c_pass, c_fail, c_metrics = candidate_results[cid]
         b_mark = "PASS" if b_pass else "FAIL"
         c_mark = "PASS" if c_pass else "FAIL"
         flag = ""
         if b_pass and not c_pass:
             flag = "  <-- REGRESSION"
             regressions.append(cid)
-        print(f"{cid:28s} baseline={b_mark:4s} candidate={c_mark:4s}{flag}")
+        total_calls += c_metrics["tool_call_count"]
+        total_repeated += c_metrics["repeated_call_count"]
+        repeat_flag = f"  <-- {c_metrics['repeated_call_count']} repeated call(s)" if c_metrics["repeated_call_count"] else ""
+        print(
+            f"{cid:28s} baseline={b_mark:4s} candidate={c_mark:4s} "
+            f"calls={c_metrics['tool_call_count']}{flag}{repeat_flag}"
+        )
         if not c_pass:
             for f in c_fail:
                 print(f"    candidate failure: {f}")
 
     print(f"\n{len(regressions)} regression(s) found: {regressions}")
+    print(f"candidate trajectory: {total_calls} total tool call(s), {total_repeated} repeated call(s) across the suite")
     sys.exit(1 if regressions else 0)
 
 
