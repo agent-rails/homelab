@@ -1,7 +1,6 @@
 # Decisions and footguns
 
 Real problems hit while building this stack, and how they were actually resolved.
-No hypotheticals — every entry below was reproduced live.
 
 ## Prefix caching shows no benefit under low, sequential load
 
@@ -64,7 +63,7 @@ instead of hardcoding the host bridge address everywhere.
 
 Open WebUI sends `tool_choice: "auto"` by default; vLLM rejects that without
 `--enable-auto-tool-choice --tool-call-parser hermes`. The parser name was confirmed
-against the real Qwen3 `tokenizer_config.json` chat template, not guessed — wrong
+against the real Qwen3 `tokenizer_config.json` chat template — wrong
 parser choice fails silently with malformed tool calls instead of an error.
 
 ## Open WebUI port-forward dies on pod rollout
@@ -255,7 +254,7 @@ base64) encrypted and stored all four minted keys with zero salt/Fernet errors,
 and scope enforcement verified live: a key scoped to `ollama-default` returns
 `200` on that model and `403` on `vllm-default`/`gpt-oss-default`, with
 `/v1/models` filtered to its scope. That 403 is the concrete blast-radius
-reduction DESIGN.md §3.4 promised, now proven rather than asserted.
+reduction DESIGN.md §3.4 promised.
 
 **Deviation 1 — actual per-consumer scoping differs from DESIGN's examples.**
 DESIGN.md's illustrative text said "Hermes and OpenClaw get only
@@ -298,9 +297,9 @@ path; there is no committed launch script to make this durable.
 
 **That caveat is now closed.** OpenClaw has real, native `.env` support --
 `stateEnvPath: path.join(resolveStateDir(process.env), ".env")` in its own
-`dotenv-*.js` -- it auto-loads `~/.openclaw/.env` on every `gateway run`,
-before this session ever discovered it (confirmed by reading the installed
-package's own dist source, not guessed). Wrote `VLLM_API_KEY=<key>` there;
+`dotenv-*.js` -- it auto-loads `~/.openclaw/.env` on every `gateway run`
+(confirmed by reading the installed package's own dist source). Wrote
+`VLLM_API_KEY=<key>` there;
 restarted the gateway with zero manual export, zero shell profile edit. It
 authenticated cleanly on the first attempt.
 
@@ -332,7 +331,7 @@ Separately: tried three different local models (`deepseek-r1:8b`, `llama3.1:8b`,
 
 ## Tool-narration bug root-caused: small local models emit fake tool-call JSON that OpenClaw's own repair grammar doesn't recognize; both documented mitigations make it worse
 
-Followed up on the entry above with a real, captured reproduction and a source-level root cause, using the exact same live-agent-tool-call pattern used elsewhere in this repo (real `openclaw agent` turn against the running gateway, real logs, no guessing).
+Followed up on the entry above with a captured reproduction and a source-level root cause.
 
 **Minimal reproduction (no skill, no tools needed).** Against the live production default agent (`agents.defaults.model.primary: vllm/ollama-default`, i.e. `llama3.1:8b` via the LiteLLM proxy — the actual day-to-day config from the Phase 1/2 work above), sent the single most trivial prompt possible:
 
@@ -348,7 +347,7 @@ Instead of replying `ok`, the model's entire visible reply was a raw JSON object
 
 Repeated on the same session, next turn: a different fabricated JSON envelope, `{"type": "function", "name": "write", "parameters": {"path": "MEMORY.md", "content": "[User: Mon 2023-01-29 11:30 GMT.]..."}}` — again zero real tool calls, a wrong/fabricated date, and content unrelated to the prompt. 100% reproducible, unrelated to the llmfit-advisor skill or any particular tool surface — this is the model's baseline behavior on the config already in production use.
 
-**Richer reproduction (llmfit-advisor skill, matching the entry above).** Same `openclaw agent` pattern, `ollama/llama3.1:8b` as primary, prompted to use llmfit-advisor. Captured via `openclaw sessions export-trajectory` and the raw `transcript_events` SQLite table (`~/.openclaw/agents/main/agent/openclaw-agent.sqlite`) rather than guessed:
+**Richer reproduction (llmfit-advisor skill, matching the entry above).** Same `openclaw agent` pattern, `ollama/llama3.1:8b` as primary, prompted to use llmfit-advisor. Captured via `openclaw sessions export-trajectory` and the raw `transcript_events` SQLite table (`~/.openclaw/agents/main/agent/openclaw-agent.sqlite`):
 
 1. Model calls the real `sessions_spawn` tool to delegate the check to a subagent. Tool result comes back `"status": "accepted"` with an explicit instruction: *"do NOT call sessions_list... wait for runtime completion events... only answer after completion events for ALL required children arrive."*
 2. Model immediately ignores that instruction and replies to the user: *"I have checked and recommended a local model... This model will be applied for further interactions"* — narrating the check as already complete when the subagent has barely started.
@@ -356,7 +355,7 @@ Repeated on the same session, next turn: a different fabricated JSON envelope, `
 4. It eventually does make a real, structured `exec` tool call — but with the wrong parameter name (`cmd` instead of the schema's required `command`; confirmed against `docs/tools/exec.md`), so it fails validation: `Validation failed for tool "exec": command: must have required properties command`.
 5. With zero real data in hand, the final answer fabricates specific hardware specs and a fit score verbatim copied from its own child subagent's equally-fabricated report (which had made the identical mistake one level down): `"Local hardware detected: CPU: 12 cores @ 3.2 GHz, RAM: 64 GB DDR4-3200... Fit score: 95%."` — a two-level hallucination chain, not derived from any real `llmfit` output.
 
-**Root cause, read from OpenClaw's own bundled source, not guessed.** `dist/src-Rlms7fwG.js` (`packages/tool-call-repair`) is a real, dedicated module that scans assistant text for exactly this failure mode — plaintext tool calls from providers whose native tool-calling is unreliable — and promotes recognized ones into real executed tool calls (release notes confirm Ollama is an explicit target: *"Repaired plain-text tool calls from LM Studio, xAI, and Ollama now emit a final completion event"*, `docs/releases/2026.7.1.md`). But its grammar (`scanXmlishToolCall`, `scanPlainTextJsonToolCall`) only recognizes specific prefixed syntaxes: `<function=name>...</function>`, `[name]`, `[tool:name]`, or a Harmony-channel/bracket-prefixed JSON blob. A bare, unprefixed JSON object shaped like `{"type": "function", "name": ..., "parameters": {...}}` — what `llama3.1:8b` actually emits — matches none of them, so it passes straight through as literal visible text instead of being repaired, executed, or even stripped from display.
+**Root cause, read from OpenClaw's own bundled source.** `dist/src-Rlms7fwG.js` (`packages/tool-call-repair`) is a real, dedicated module that scans assistant text for exactly this failure mode — plaintext tool calls from providers whose native tool-calling is unreliable — and promotes recognized ones into real executed tool calls (release notes confirm Ollama is an explicit target: *"Repaired plain-text tool calls from LM Studio, xAI, and Ollama now emit a final completion event"*, `docs/releases/2026.7.1.md`). But its grammar (`scanXmlishToolCall`, `scanPlainTextJsonToolCall`) only recognizes specific prefixed syntaxes: `<function=name>...</function>`, `[name]`, `[tool:name]`, or a Harmony-channel/bracket-prefixed JSON blob. A bare, unprefixed JSON object shaped like `{"type": "function", "name": ..., "parameters": {...}}` — what `llama3.1:8b` actually emits — matches none of them, so it passes straight through as literal visible text instead of being repaired, executed, or even stripped from display.
 
 **Both of OpenClaw's own documented mitigations were tried live and made it worse, not better** (`docs/providers/ollama.md`, "Lean local model profile"):
 
@@ -372,7 +371,7 @@ groundwork for: putting [agent-guard](https://github.com/agent-rails/agent-guard
 policy gate in front of OpenClaw's real tool dispatch. Landed as an opt-in capability
 in `openclaw/agent-guard/` (policy + hook plugin + manifest); the live daily-use config
 was deliberately not touched. Investigated from the installed dist source
-(`2026.8.1-beta.2`), not assumed.
+(`2026.8.1-beta.2`).
 
 **The integration point is not the MCP wrapper.** agent-guard's advertised zero-code
 path (`guard mcp --policy p.yaml -- <server>`) wraps a stdio MCP server subprocess and
