@@ -96,8 +96,12 @@ cd observability && docker compose up -d
 ```
 
 Prometheus (`localhost:9090`) scrapes vLLM's `/metrics` via `host.docker.internal:8000`
-— works out of the box against a native-process vLLM, no adaptation needed from
-vLLM's own upstream example. Grafana (`localhost:3000`, default `admin`/`admin`)
+and LiteLLM's `/metrics` via `host.docker.internal:4000`. The LiteLLM target requires
+the proxy port-forward and `LITELLM_METRICS_KEY` in the environment before starting
+Compose. The pinned LiteLLM build was verified to reject a normal virtual key on
+`/metrics`; use the master key for this local-only stack and do not persist it in
+the repository. Compose mounts it into Prometheus as a runtime secret. Grafana
+(`localhost:3000`, default `admin`/`admin`)
 needs the Prometheus datasource and dashboard added once per fresh container:
 
 ```bash
@@ -106,7 +110,8 @@ curl -s -X POST http://admin:admin@localhost:3000/api/datasources \
   -d '{"name":"Prometheus","type":"prometheus","url":"http://prometheus:9090","access":"proxy","isDefault":true}'
 ```
 
-then import `observability/grafana-vllm-dashboard.json` via Grafana's dashboard
+then import `observability/grafana-vllm-dashboard.json` and
+`observability/grafana-litellm-dashboard.json` via Grafana's dashboard
 import UI (or `/api/dashboards/import`), pointing its `DS_PROMETHEUS` input at the
 datasource UID returned above.
 
@@ -206,4 +211,6 @@ time this ran against a 4-bit MLX quant of the same model: text quality was fine
 (even slightly better on one case), but **tool-calling silently broke** — the
 quantized model stopped emitting `tool_calls` entirely on two cases the base model
 passed. Exit code is nonzero on any baseline-passed/candidate-failed case, so this
-is CI-gateable.
+is CI-gateable. The report also includes the response model, token usage, and
+p50/p95 request latency so model or gateway routing changes can be evaluated for
+efficiency as well as correctness.

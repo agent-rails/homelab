@@ -9,7 +9,9 @@ Exit code is nonzero if the candidate regresses on any case the baseline passed.
 """
 import argparse
 import json
+import math
 import sys
+import time
 import urllib.request
 
 
@@ -34,12 +36,21 @@ def call_model(base_url, model, case, api_key=None):
         data=json.dumps(payload).encode(),
         headers=headers,
     )
+    started = time.monotonic()
     with urllib.request.urlopen(req, timeout=60) as resp:
         body = json.loads(resp.read())
+    latency_ms = (time.monotonic() - started) * 1000
     choice = body["choices"][0]["message"]
     text = (choice.get("content") or "").lower()
     tool_calls = [tc["function"]["name"] for tc in (choice.get("tool_calls") or [])]
-    return text, tool_calls
+    usage = body.get("usage") or {}
+    return text, tool_calls, {
+        "latency_ms": latency_ms,
+        "response_model": body.get("model"),
+        "prompt_tokens": usage.get("prompt_tokens") or 0,
+        "completion_tokens": usage.get("completion_tokens") or 0,
+        "total_tokens": usage.get("total_tokens") or 0,
+    }
 
 
 def trajectory_metrics(tool_calls):
@@ -85,13 +96,46 @@ def run_suite(base_url, model, cases, api_key=None):
     results = {}
     for case in cases:
         try:
-            text, tool_calls = call_model(base_url, model, case, api_key=api_key)
+            text, tool_calls, request_metrics = call_model(base_url, model, case, api_key=api_key)
             failures = check(case, text, tool_calls)
-            metrics = trajectory_metrics(tool_calls)
+            metrics = {**trajectory_metrics(tool_calls), **request_metrics}
             results[case["id"]] = (len(failures) == 0, failures, metrics)
         except Exception as e:
-            results[case["id"]] = (False, [f"request error: {e}"], {"tool_call_count": 0, "repeated_call_count": 0})
+            results[case["id"]] = (
+                False,
+                [f"request error: {e}"],
+                {
+                    "tool_call_count": 0,
+                    "repeated_call_count": 0,
+                    "latency_ms": None,
+                    "response_model": None,
+                    "prompt_tokens": 0,
+                    "completion_tokens": 0,
+                    "total_tokens": 0,
+                },
+            )
     return results
+
+
+def percentile(values, percentile_value):
+    if not values:
+        return None
+    ordered = sorted(values)
+    index = max(0, math.ceil((percentile_value / 100) * len(ordered)) - 1)
+    return ordered[index]
+
+
+def suite_metrics(results):
+    completed = [metrics for _, _, metrics in results.values() if metrics["latency_ms"] is not None]
+    latencies = [metrics["latency_ms"] for metrics in completed]
+    return {
+        "completed": len(completed),
+        "p50_latency_ms": percentile(latencies, 50),
+        "p95_latency_ms": percentile(latencies, 95),
+        "prompt_tokens": sum(metrics["prompt_tokens"] for metrics in completed),
+        "completion_tokens": sum(metrics["completion_tokens"] for metrics in completed),
+        "total_tokens": sum(metrics["total_tokens"] for metrics in completed),
+    }
 
 
 def main():
@@ -132,7 +176,12 @@ def main():
         repeat_flag = f"  <-- {c_metrics['repeated_call_count']} repeated call(s)" if c_metrics["repeated_call_count"] else ""
         print(
             f"{cid:28s} baseline={b_mark:4s} candidate={c_mark:4s} "
-            f"calls={c_metrics['tool_call_count']}{flag}{repeat_flag}"
+            f"calls={c_metrics['tool_call_count']} "
+            f"latency_ms={c_metrics['latency_ms']:.1f} "
+            f"tokens={c_metrics['total_tokens']} "
+            f"model={c_metrics['response_model']}{flag}{repeat_flag}"
+            if c_metrics["latency_ms"] is not None
+            else f"{cid:28s} baseline={b_mark:4s} candidate={c_mark:4s} request_failed{flag}"
         )
         if not c_pass:
             for f in c_fail:
@@ -140,6 +189,15 @@ def main():
 
     print(f"\n{len(regressions)} regression(s) found: {regressions}")
     print(f"candidate trajectory: {total_calls} total tool call(s), {total_repeated} repeated call(s) across the suite")
+    for label, results in (("baseline", baseline_results), ("candidate", candidate_results)):
+        metrics = suite_metrics(results)
+        p50 = f"{metrics['p50_latency_ms']:.1f}" if metrics["p50_latency_ms"] is not None else "n/a"
+        p95 = f"{metrics['p95_latency_ms']:.1f}" if metrics["p95_latency_ms"] is not None else "n/a"
+        print(
+            f"{label} inference: completed={metrics['completed']}/{len(cases)} "
+            f"p50_ms={p50} p95_ms={p95} total_tokens={metrics['total_tokens']} "
+            f"prompt_tokens={metrics['prompt_tokens']} completion_tokens={metrics['completion_tokens']}"
+        )
     sys.exit(1 if regressions else 0)
 
 
