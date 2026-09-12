@@ -346,8 +346,11 @@ Measured through the proxy with a key scoped to `gpt-oss-default`, using
 curly apostrophe, which `don't know` does not match. It failed before the
 change too.
 
-Rule: use `ollama_chat/` for any Ollama model that will be sent tools, and put a
-tool call in the health check, not just a plain completion.
+Rule: before routing a model that will be sent tools through `ollama/`, send it
+one tool-bearing request through the proxy and confirm structured `tool_calls`
+come back; move only a model that fails that check to `ollama_chat/`. Health
+checks for tool-using consumers include a tool call, not just a plain
+completion.
 
 Rollback: set the line back to `ollama/gpt-oss:20b`, `kubectl apply -f
 k3s/ai-infra/litellm-configmap.yaml`, then `kubectl -n ai-infra rollout restart
