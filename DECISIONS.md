@@ -323,6 +323,38 @@ macOS process here, not a pod) -- the k8s Secret is the durable source of
 truth for what the real value is, the `.env` file is just where OpenClaw
 itself needs it to sit.
 
+## LiteLLM `ollama/` drops gpt-oss tool calls; `gpt-oss-default` uses `ollama_chat/`
+
+`gpt-oss-default` pointed at `ollama/gpt-oss:20b`. Any request that carried
+tools came back `200` with empty content and no `tool_calls`, streaming or not,
+so agent gateways reported an empty turn. Prompts without tools answered
+normally, so a plain "reply OK" health check passed the whole time.
+
+In LiteLLM 1.97.0 the `ollama/` prefix calls Ollama's `/api/generate`
+(`llms/ollama/completion/transformation.py`) and `ollama_chat/` calls
+`/api/chat` (`llms/ollama/chat/transformation.py`). Only `/api/chat` returns
+gpt-oss tool calls as structured `tool_calls`. `gpt-oss-default` now uses
+`ollama_chat/gpt-oss:20b`.
+
+`ollama-default` (`llama3.1:8b`) was checked the same way and does return
+structured `tool_calls` under `ollama/`, so it is unchanged.
+
+Measured through the proxy with a key scoped to `gpt-oss-default`, using
+`eval/prompts.json`: 2/6 before, 5/6 after; a tool-call request returns
+`check_inventory` both streaming and non-streaming. The remaining failure,
+`refuses_fabrication`, is a string match: the reply "I don’t know." uses a
+curly apostrophe, which `don't know` does not match. It failed before the
+change too.
+
+Rule: use `ollama_chat/` for any Ollama model that will be sent tools, and put a
+tool call in the health check, not just a plain completion.
+
+Rollback: set the line back to `ollama/gpt-oss:20b`, `kubectl apply -f
+k3s/ai-infra/litellm-configmap.yaml`, then `kubectl -n ai-infra rollout restart
+deploy/litellm-proxy` (the config is mounted with `subPath`, so the pod does not
+pick up ConfigMap changes without a restart). Restart any `port-forward` on
+`:4000` afterwards.
+
 ## OpenClaw beta.2 (npm, real release) resolves the schema bug; small local models narrate tool calls instead of executing them
 
 Upgrading from the hand-built source checkout to the real published `openclaw@2026.8.1-beta.2` npm release (one patch beyond the broken `beta.1`) resolved the schema self-inconsistency below cleanly: `[gateway] ready` on first try, zero schema errors across multiple restarts, Buzz connected on first attempt instead of needing a reconnect loop. This is the real, sustainable fix — track the published release channel, not a hand-built source tree. Confirmed via `npm view openclaw dist-tags`: OpenClaw has a genuine stable/production channel (`latest: 2026.7.1-2`) separate from `beta`; this stack is on beta only because the Buzz plugin requires `>=2026.7.2`, which has not shipped as a stable release yet. The instability documented below is a consequence of that specific version-floor requirement, not evidence OpenClaw itself is broadly unstable software.
