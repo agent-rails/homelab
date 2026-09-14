@@ -35,6 +35,9 @@ broader Principal Architect / FDE-track experience with agent orchestration on k
 - `DESIGN.md` — architecture, DevSecOps threat model, and rollout plan for a
   LiteLLM Proxy fronting vLLM/Ollama (Phase 1 implemented, see `k3s/ai-infra/litellm-*`;
   llm-d was considered and rejected as oversized for a single-GPU homelab)
+- `AI_LAB_SECURITY.md` — the enforced-gateway target, cutover acceptance tests,
+  evidence classes, and pinned advisory `llm-fit` capture used before manifest
+  approval
 
 ## What's NOT here
 
@@ -42,6 +45,11 @@ Real secrets: Buzz nsec keys (`~/.buzz/keys.json`), the Hermes `.env`
 (`BUZZ_PRIVATE_KEY`, `BUZZ_ALLOWED_USERS`), and the OpenClaw gateway auth token
 (`~/.openclaw/openclaw.json` `gateway.auth.token`) all stay local. Every file here
 that would normally hold one of those uses a placeholder — see `*.example` files.
+
+LiteLLM is currently the preferred authenticated route, not an enforced network
+boundary: cluster workloads can still address the native backends through the
+ExternalName services. Do not claim gateway enforcement until the acceptance
+tests in `AI_LAB_SECURITY.md` pass.
 
 ## Architecture
 
