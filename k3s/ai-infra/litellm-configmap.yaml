@@ -19,7 +19,7 @@ data:
           api_key: "not-needed"
       - model_name: gpt-oss-default
         litellm_params:
-          model: ollama/gpt-oss:20b
+          model: ollama_chat/gpt-oss:20b
           api_base: http://ollama-host:11434
           extra_headers:
             Host: "localhost"

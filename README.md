@@ -130,6 +130,17 @@ kubectl apply -f k3s/ai-infra/litellm-configmap.yaml -f k3s/ai-infra/litellm-dep
 kubectl port-forward -n ai-infra svc/litellm-proxy 4000:4000
 ```
 
+The config is mounted with `subPath`, so a running pod never sees ConfigMap
+changes. After editing `litellm-configmap.yaml`, restart the proxy and then the
+port-forward:
+
+```
+kubectl apply -f k3s/ai-infra/litellm-configmap.yaml
+kubectl -n ai-infra rollout restart deploy/litellm-proxy
+kubectl -n ai-infra rollout status deploy/litellm-proxy
+kubectl port-forward -n ai-infra svc/litellm-proxy 4000:4000
+```
+
 Needs a `litellm-secrets` Secret first (see `k3s/ai-infra/litellm-secret.yaml.example`) —
 **both** `LITELLM_MASTER_KEY` and `LITELLM_SALT_KEY` must be `openssl rand -base64 32`
 format specifically (not hex) or LiteLLM's own key-cache decryption fails with a
