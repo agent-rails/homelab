@@ -38,6 +38,8 @@ broader Principal Architect / FDE-track experience with agent orchestration on k
 - `AI_LAB_SECURITY.md` — the enforced-gateway target, cutover acceptance tests,
   evidence classes, and pinned advisory `llm-fit` capture used before manifest
   approval
+- `gateway/` — the pinned, TLS-only Caddy shadow configuration and fail-closed
+  launcher/test path for placing native Ollama and MLX behind LiteLLM
 
 ## What's NOT here
 
