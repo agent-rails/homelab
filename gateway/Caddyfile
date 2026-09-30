@@ -1,0 +1,60 @@
+{
+	admin off
+	auto_https disable_redirects
+}
+
+https://{$AI_GATEWAY_HOST:localhost}:{$OLLAMA_GATEWAY_PORT:19443} {
+	tls internal
+
+	@authorized header Authorization "Bearer {$OLLAMA_GATEWAY_TOKEN}"
+	handle @authorized {
+		@inference path \
+ /api/chat \
+ /api/embed \
+ /api/embeddings \
+ /api/generate \
+ /api/ps \
+ /api/show \
+ /api/tags \
+ /api/version \
+ /v1/chat/completions \
+ /v1/completions \
+ /v1/embeddings \
+ /v1/models
+		handle @inference {
+			reverse_proxy {$OLLAMA_UPSTREAM:127.0.0.1:11434} {
+				header_up -Authorization
+				header_up Host localhost
+			}
+		}
+
+		respond 404
+	}
+
+	respond 401
+}
+
+https://{$AI_GATEWAY_HOST:localhost}:{$MLX_GATEWAY_PORT:19444} {
+	tls internal
+
+	@authorized header Authorization "Bearer {$MLX_GATEWAY_TOKEN}"
+	handle @authorized {
+		@inference path \
+ /health \
+ /metrics \
+ /v1/chat/completions \
+ /v1/completions \
+ /v1/embeddings \
+ /v1/models
+		handle @inference {
+			reverse_proxy {$MLX_UPSTREAM:127.0.0.1:8000} {
+				header_up -Authorization
+				header_up Host localhost
+			}
+		}
+
+		respond 404
+	}
+
+	respond 401
+}

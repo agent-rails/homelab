@@ -1,6 +1,4 @@
 # docker-compose.yaml
-version: "3"
-
 services:
   prometheus:
     image: prom/prometheus:latest
@@ -10,6 +8,8 @@ services:
       - "9090:9090"   # the default port used by Prometheus
     volumes:
       - ${PWD}/prometheus.yaml:/etc/prometheus/prometheus.yml # mount Prometheus config file
+    secrets:
+      - litellm_metrics_key
 
   grafana:
     image: grafana/grafana:latest
@@ -17,3 +17,7 @@ services:
       - prometheus
     ports:
       - "3000:3000" # the default port used by Grafana
+
+secrets:
+  litellm_metrics_key:
+    environment: LITELLM_METRICS_KEY
