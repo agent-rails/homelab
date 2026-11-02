@@ -371,8 +371,13 @@ authenticated Caddy gateway (`gateway/Caddyfile`). The `ollama-host` and
 `bind` is required. A hostname in a Caddy site address does not restrict the
 listening interface: the shadow gateway listened on `*:19443`, including the
 LAN. Both sites now bind `127.0.0.1` and `[::1]`, and
-`scripts/test-ai-host-gateway.sh` fails if any listener leaves loopback (it
-failed against the unbound Caddyfile).
+`scripts/test-ai-host-gateway.sh` fails if any TCP or UDP (HTTP/3) listener
+leaves loopback (it failed against the unbound Caddyfile).
+
+`tls internal` tries to install Caddy's root CA into the macOS System trust
+store through `sudo`. It failed here only because sudo had no cached
+credential. Consumers pin the CA explicitly, so the Caddyfile sets
+`skip_install_trust`.
 
 OrbStack forwards host loopback to containers and pods. With Ollama bound to
 `127.0.0.1`, a plain container and a pod both got `200` from

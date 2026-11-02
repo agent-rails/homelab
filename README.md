@@ -49,8 +49,8 @@ Real secrets: Buzz nsec keys (`~/.buzz/keys.json`), the Hermes `.env`
 (`~/.openclaw/openclaw.json` `gateway.auth.token`) all stay local. Every file here
 that would normally hold one of those uses a placeholder — see `*.example` files.
 
-Every configured consumer reaches the native backends through LiteLLM and the
-authenticated gateway. That is not an isolation boundary: OrbStack forwards host
+The default route of every consumer in this repo reaches the native backends
+through LiteLLM and the authenticated gateway. That is not an isolation boundary: OrbStack forwards host
 loopback to every container and pod and does not enforce NetworkPolicy, so local
 workloads can still call raw Ollama and vLLM. See `AI_LAB_SECURITY.md`.
 

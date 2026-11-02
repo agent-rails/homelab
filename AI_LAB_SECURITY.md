@@ -15,9 +15,10 @@ consumer --per-consumer key--> LiteLLM --dedicated host gateway--> native infere
 
 Current state on the OrbStack Mac:
 
-- Every configured consumer (LiteLLM, Open WebUI through LiteLLM, Prometheus)
-  reaches Ollama and vLLM only through the authenticated host gateway in
-  `gateway/`. The `ollama-host` and `vllm-host` ExternalName services are
+- The default routes of the repo's consumers (LiteLLM, Open WebUI through
+  LiteLLM, Hermes and OpenClaw primary models through LiteLLM, Prometheus) reach
+  Ollama and vLLM through the authenticated host gateway in `gateway/`. Native
+  macOS processes can still be configured to call loopback Ollama directly. The `ollama-host` and `vllm-host` ExternalName services are
   removed.
 - The raw backends are **not isolated**. OrbStack forwards host loopback, IPv4
   and IPv6, to every container and pod, and its Kubernetes does not enforce
@@ -35,8 +36,10 @@ Current state on the OrbStack Mac:
 2. Allow only inference and health routes. For Ollama, explicitly deny model
    mutation routes including `/api/pull`, `/api/push`, `/api/delete`,
    `/api/create`, `/api/copy`, and their versioned equivalents.
-3. Configure LiteLLM as the only client of the host gateway. Store its upstream
-   credential in a Kubernetes Secret, not a ConfigMap or command line.
+3. Configure LiteLLM as the only inference client of the host gateway. Store its
+   upstream credential in a Kubernetes Secret, not a ConfigMap or command line.
+   Prometheus also holds the MLX gateway token to scrape `/metrics`; that token
+   is not path-scoped and can also call inference.
 4. Move Open WebUI and every other stable consumer to LiteLLM with a distinct,
    model-scoped virtual key. Do not give consumers the LiteLLM master key.
 5. Remove the direct backend configuration from consumers. Removing DNS aliases
@@ -69,7 +72,7 @@ cutover is accepted only when all of these tests pass:
   copy fail through every consumer path.
 - Prometheus health and inference metrics remain available without recording
   prompt or response content.
-- Rolling back restores the exact pre-cutover consumer path.
+- Rolling back restores the pre-cutover consumer path, including observability.
 
 Do not commit or print credentials while testing. Use throwaway tokens and
 delete them after the negative tests.
