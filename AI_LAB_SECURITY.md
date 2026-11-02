@@ -13,18 +13,25 @@ The intended request path is:
 consumer --per-consumer key--> LiteLLM --dedicated host gateway--> native inference
 ```
 
-The current stack does not yet enforce the second boundary. The
-`ollama-host` and `vllm-host` ExternalName services expose the native backends
-to every pod that can reach `host.orb.internal`; Open WebUI also points to those
-services directly. Ollama has unauthenticated model-management endpoints. Until
-the acceptance checks below pass, describe LiteLLM as the preferred route, not
-as a security boundary.
+Current state on the OrbStack Mac:
+
+- Every configured consumer (LiteLLM, Open WebUI through LiteLLM, Prometheus)
+  reaches Ollama and vLLM only through the authenticated host gateway in
+  `gateway/`. The `ollama-host` and `vllm-host` ExternalName services are
+  removed.
+- The raw backends are **not isolated**. OrbStack forwards host loopback, IPv4
+  and IPv6, to every container and pod, and its Kubernetes does not enforce
+  NetworkPolicy. Any local workload can still call raw Ollama, including its
+  unauthenticated model-management routes.
+- Describe the gateway as the authenticated route for configured consumers, not
+  as an isolation boundary. `DECISIONS.md` records the measurements.
 
 ## Required hardening before enforced-gateway status
 
 1. Put a dedicated authenticated host-side gateway in front of each native
    backend. Bind the backend to the narrowest address that still permits the
-   gateway to reach it.
+   gateway to reach it. On OrbStack, loopback is still reachable from every
+   container and pod, so binding alone is not a control there.
 2. Allow only inference and health routes. For Ollama, explicitly deny model
    mutation routes including `/api/pull`, `/api/push`, `/api/delete`,
    `/api/create`, `/api/copy`, and their versioned equivalents.
@@ -35,12 +42,16 @@ as a security boundary.
 5. Remove the direct backend configuration from consumers. Removing DNS aliases
    alone is not a control because pods can still resolve `host.orb.internal`.
 6. Apply default-deny ingress and egress policies only after proving that the
-   active CNI enforces them. Explicitly allow DNS, LiteLLM, and each service's
+   active CNI enforces them. OrbStack Kubernetes was tested and does not. Explicitly allow DNS, LiteLLM, and each service's
    required state dependencies.
 7. Keep gateway logs metadata-only. Do not log prompts, responses, bearer
    tokens, request bodies, or model inputs.
 
 ## Cutover acceptance
+
+Status: every check below passed on the OrbStack Mac except the two
+isolation checks for raw Ollama and vLLM, which fail on this platform by
+design (see current state above).
 
 Capture a baseline and a rollback command before applying any live change. The
 cutover is accepted only when all of these tests pass:

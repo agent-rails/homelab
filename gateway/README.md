@@ -1,10 +1,10 @@
 # Native inference gateway
 
-This is the shadow configuration for the enforced request path documented in
+This is the live gateway on the request path documented in
 `../AI_LAB_SECURITY.md`:
 
 ```text
-consumer -> LiteLLM -> Caddy -> loopback-only Ollama or MLX
+consumer -> LiteLLM -> Caddy (loopback-bound) -> Ollama or MLX on loopback
 ```
 
 Caddy terminates TLS, requires a separate bearer token for each backend,
@@ -36,22 +36,54 @@ forwarding, mutation-route denial, default denial, and that neither token is
 present in Caddy's process log. It does not modify
 Ollama, LiteLLM, Kubernetes, Homebrew services, or production ports.
 
-## Production cutover prerequisites
+## Persistent gateway
 
-Do not run this configuration as a persistent service yet. The cutover still
-requires all of the following in one reviewed change:
+The live gateway runs from a private state directory, `~/.config/ai-gateway`
+(mode 700). It holds both upstream tokens (mode 600), Caddy's data directory
+with the internal CA, and `gateway.log`.
 
-- prove the OrbStack-facing host address and its stability;
-- issue a gateway certificate whose SAN matches the in-cluster hostname;
-- store the private key and upstream tokens in owner-only host files;
-- mount only the CA certificate and Secret-backed upstream tokens into LiteLLM;
-- confirm the current LiteLLM build can inject the bearer tokens and verify the
-  private CA without disabling TLS verification;
-- bind Ollama and MLX to loopback and prove raw ports are unreachable from an
-  unrelated pod and containers on multiple OrbStack bridges;
-- migrate Open WebUI and all stable consumers to LiteLLM virtual keys;
-- stage tested NetworkPolicies for DNS, LiteLLM, Postgres and gateway egress;
-- capture exact pre-cutover state and rollback commands.
+```bash
+scripts/install-ai-host-gateway.sh       # creates tokens once, runs Caddy as a launchd user agent
+scripts/sync-ai-gateway-credentials.sh   # copies tokens and CA into ai-infra Secret/ConfigMap
+```
 
-Never put a real token in this repository, a ConfigMap, a process argument, or a
-log. Never use `tls_insecure_skip_verify` or plaintext HTTP as a fallback.
+The install script creates missing tokens but never replaces existing ones, and
+it reuses the existing CA, so re-running it does not invalidate the cluster copy.
+It sets `AI_GATEWAY_HOST=host.orb.internal`, so the certificate name matches what
+pods dial. From the Mac itself, use
+`curl --resolve host.orb.internal:19443:127.0.0.1` because that name does not
+resolve on the host.
+
+Consumers:
+
+- LiteLLM reads `OLLAMA_GATEWAY_TOKEN` and `MLX_GATEWAY_TOKEN` from the
+  `ai-gateway-upstream` Secret, and trusts the CA from the `ai-gateway-ca`
+  ConfigMap through `SSL_VERIFY`.
+- Prometheus mounts the MLX token and CA as compose secrets.
+
+Stop the gateway:
+
+```bash
+launchctl bootout gui/$(id -u)/dev.agent-rails.ai-gateway
+```
+
+## Cutover rollback
+
+Restore the pre-cutover consumer path from commit `3fef1db`:
+
+```bash
+for f in litellm-configmap litellm-deployment ollama-service vllm-service; do
+  git show 3fef1db:k3s/ai-infra/$f.yaml | kubectl apply -f -
+done
+kubectl -n ai-infra rollout status deploy/litellm-proxy
+git show 3fef1db:k3s/ai-infra/open-webui-values.yaml > /tmp/open-webui-values.yaml
+helm upgrade open-webui open-webui/open-webui --version 16.0.0 -n ai-infra -f /tmp/open-webui-values.yaml
+```
+
+Then restart the `:4000` port-forward.
+
+## Known limit
+
+OrbStack forwards host loopback to every container and pod, and its
+Kubernetes does not enforce NetworkPolicy, so raw Ollama and vLLM remain
+reachable from local workloads. See `../AI_LAB_SECURITY.md`.
