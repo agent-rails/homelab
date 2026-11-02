@@ -21,7 +21,8 @@ tr -d '\n' <"$state_dir/mlx.token" >"$work_dir/MLX_GATEWAY_TOKEN"
 kubectl -n "$namespace" create secret generic ai-gateway-upstream \
 	--from-file=OLLAMA_GATEWAY_TOKEN="$work_dir/OLLAMA_GATEWAY_TOKEN" \
 	--from-file=MLX_GATEWAY_TOKEN="$work_dir/MLX_GATEWAY_TOKEN" \
-	--dry-run=client -o yaml | kubectl apply -f -
+	--dry-run=client -o yaml | kubectl apply --server-side --field-manager=ai-gateway-sync -f -
+kubectl -n "$namespace" annotate secret ai-gateway-upstream kubectl.kubernetes.io/last-applied-configuration- >/dev/null
 kubectl -n "$namespace" create configmap ai-gateway-ca \
 	--from-file=ca.crt="$ca_cert" \
-	--dry-run=client -o yaml | kubectl apply -f -
+	--dry-run=client -o yaml | kubectl apply --server-side --field-manager=ai-gateway-sync -f -
