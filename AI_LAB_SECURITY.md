@@ -52,12 +52,15 @@ Current state on the OrbStack Mac:
 
 ## Cutover acceptance
 
-Status: every check below passed on the OrbStack Mac except the two
-isolation checks for raw Ollama and vLLM, which fail on this platform by
-design (see current state above).
-
 Capture a baseline and a rollback command before applying any live change. The
-cutover is accepted only when all of these tests pass:
+cutover is accepted only when all of these tests pass, or a failing test is
+waived in writing with its residual risk.
+
+Status on the OrbStack Mac (2026-11-02): every check passed except the two
+raw-backend isolation checks (unrelated pod, other bridge reaching raw Ollama or
+vLLM). Those cannot pass on this platform and are waived for this lab: the owner
+chose to ship routing without isolation and keep the residual documented. The
+waiver does not carry to any other host.
 
 - Existing consumers complete the fixed eval suite through LiteLLM.
 - Each consumer key can reach only its approved model aliases.
