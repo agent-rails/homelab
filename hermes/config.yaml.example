@@ -1,8 +1,8 @@
 model:
   provider: custom
-  base_url: http://localhost:11434/v1
-  default: gpt-oss:20b
-  api_key: ollama
+  base_url: http://localhost:4000/v1
+  default: gpt-oss-default
+  key_env: LITELLM_VIRTUAL_KEY
 gateway:
   platforms:
     buzz:

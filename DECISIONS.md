@@ -59,6 +59,9 @@ passthrough into OrbStack's VM isn't a thing. Registered them into cluster DNS v
 so in-cluster workloads (Hermes, Open WebUI) address them by normal service name
 instead of hardcoding the host bridge address everywhere.
 
+Superseded by the enforced gateway cutover: consumers now reach the native
+backends only through the authenticated gateway, and both services are removed.
+
 ## vLLM tool-choice rejection
 
 Open WebUI sends `tool_choice: "auto"` by default; vLLM rejects that without
@@ -337,7 +340,8 @@ gpt-oss tool calls as structured `tool_calls`. `gpt-oss-default` now uses
 `ollama_chat/gpt-oss:20b`.
 
 `ollama-default` (`llama3.1:8b`) was checked the same way and does return
-structured `tool_calls` under `ollama/`, so it is unchanged.
+structured `tool_calls` under `ollama/`. It later moved to `ollama_chat/` for
+gateway authentication (see the enforced gateway cutover entry).
 
 Measured through the proxy with a key scoped to `gpt-oss-default`, using
 `eval/prompts.json`: 2/6 before, 5/6 after; a tool-call request returns
@@ -357,6 +361,82 @@ k3s/ai-infra/litellm-configmap.yaml`, then `kubectl -n ai-infra rollout restart
 deploy/litellm-proxy` (the config is mounted with `subPath`, so the pod does not
 pick up ConfigMap changes without a restart). Restart any `port-forward` on
 `:4000` afterwards.
+
+## Enforced gateway cutover: native backends behind Caddy, raw ports still reachable on OrbStack
+
+LiteLLM, Open WebUI and Prometheus now reach Ollama and vLLM only through the
+authenticated Caddy gateway (`gateway/Caddyfile`). The `ollama-host` and
+`vllm-host` ExternalName services are gone. Five platform facts shaped the result.
+
+`bind` is required. A hostname in a Caddy site address does not restrict the
+listening interface: the shadow gateway listened on `*:19443`, including the
+LAN. Both sites now bind `127.0.0.1` and `[::1]`, and
+`scripts/test-ai-host-gateway.sh` fails if any TCP or UDP (HTTP/3) listener
+leaves loopback (it failed against the unbound Caddyfile).
+
+`tls internal` tries to install Caddy's root CA into the macOS System trust
+store through `sudo`. It failed here only because sudo had no cached
+credential. Consumers pin the CA explicitly, so the Caddyfile sets
+`skip_install_trust`.
+
+OrbStack forwards host loopback to containers and pods. With Ollama bound to
+`127.0.0.1`, a plain container and a pod both got `200` from
+`http://host.orb.internal:11434/api/version`. A test server bound to `[::1]`
+was reachable the same way. Binding a backend to loopback therefore isolates
+nothing from local workloads on this platform. The same forwarding is what lets
+pods reach the loopback-bound gateway.
+
+OrbStack Kubernetes (v1.35.6+orb1, OrbStack 2.2.3) does not enforce
+NetworkPolicy. A pod in a namespace with a default-deny egress policy still
+reached raw Ollama (`200`) and `1.1.1.1` (`301`). Pod egress policy is not
+available as a control here.
+
+`host.orb.internal` resolves inside OrbStack containers and pods but not on the
+Mac itself. Host-side checks against the gateway use
+`curl --resolve host.orb.internal:<port>:127.0.0.1` so the certificate name
+still matches.
+
+LiteLLM 1.97.0's `ollama/` completion provider never sends `api_key`:
+`validate_environment` in `llms/ollama/completion/transformation.py` returns
+the headers unchanged, while `ollama_chat/` (`llms/ollama/common_utils.py`) and
+`openai/` send `Authorization: Bearer <api_key>`. `ollama-default` moved to
+`ollama_chat/llama3.1:8b`; without that, the gateway would reject every
+`ollama-default` request with `401`. `SSL_VERIFY=/etc/ai-gateway/ca.crt` makes
+LiteLLM trust the gateway CA. Without the CA it fails with
+`CERTIFICATE_VERIFY_FAILED`, so verification is on by default. `SSL_VERIFY` is
+process-wide: it replaces the default CA bundle for every outbound LiteLLM
+call, which is acceptable while every upstream is behind this gateway.
+
+Acceptance results after cutover:
+
+- Eval (`eval/prompts.json`), raw backend vs gateway path: Ollama 5/6 vs 5/6,
+  vLLM 5/6 vs 5/6, zero regressions. The failing case fails on both sides
+  (`no_tool_when_not_needed` for llama3.1:8b, `basic_arithmetic` for Qwen3-0.6B).
+- Key scope: the OpenClaw key gets `200` on `ollama-default` and `403` on
+  `gpt-oss-default`; the Open WebUI key gets `200` on its approved aliases.
+- A deleted virtual key returns `401`.
+- Gateway without credentials returns `401` from a pod and from a container on
+  a separate Docker bridge.
+- Through the gateway with a valid token, `/api/pull`, `/api/push`,
+  `/api/delete`, `/api/create`, `/api/copy`, `/api/blobs/...` and unknown paths
+  return `404`. LiteLLM's `/ollama/api/pull` returns `404`.
+- LiteLLM `/metrics/` and Prometheus `vllm` series contain no prompt text.
+  Neither upstream token appears in the gateway log or LiteLLM logs.
+- Rollback to the pre-cutover manifests and Open WebUI values restored the raw
+  path (`ollama-default` `200` through `ollama-host`); the cutover was then
+  re-applied.
+
+Residual, not closed: any local pod or container can still call raw Ollama and
+vLLM on `host.orb.internal`, including Ollama's model-management routes. The
+gateway is the authenticated route for every configured consumer, not an
+isolation boundary. Closing that requires a backend that only accepts
+connections the forwarder cannot make (for example a Unix socket, untested) or
+a Linux host whose CNI enforces NetworkPolicy.
+
+vllm-metal's default `--gpu-memory-utilization=0.92` reserves 92% of unified
+memory. With Ollama models loaded at the same time, vLLM died mid-eval with
+`kIOGPUCommandBufferCallbackErrorOutOfMemory`. Running it with
+`--gpu-memory-utilization 0.25` alongside Ollama passed the full eval.
 
 ## OpenClaw beta.2 (npm, real release) resolves the schema bug; small local models narrate tool calls instead of executing them
 

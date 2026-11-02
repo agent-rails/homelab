@@ -5,9 +5,15 @@ global:
 
 scrape_configs:
   - job_name: vllm
+    scheme: https
+    authorization:
+      type: Bearer
+      credentials_file: /run/secrets/mlx_gateway_token
+    tls_config:
+      ca_file: /run/secrets/ai_gateway_ca
     static_configs:
       - targets:
-          - 'host.docker.internal:8000'
+          - 'host.orb.internal:19444'
 
   - job_name: litellm
     metrics_path: /metrics/

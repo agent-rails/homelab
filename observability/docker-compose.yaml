@@ -10,6 +10,8 @@ services:
       - ${PWD}/prometheus.yaml:/etc/prometheus/prometheus.yml # mount Prometheus config file
     secrets:
       - litellm_metrics_key
+      - mlx_gateway_token
+      - ai_gateway_ca
 
   grafana:
     image: grafana/grafana:latest
@@ -21,3 +23,7 @@ services:
 secrets:
   litellm_metrics_key:
     environment: LITELLM_METRICS_KEY
+  mlx_gateway_token:
+    file: ${HOME}/.config/ai-gateway/mlx.token
+  ai_gateway_ca:
+    file: ${HOME}/.config/ai-gateway/data/caddy/pki/authorities/local/root.crt
