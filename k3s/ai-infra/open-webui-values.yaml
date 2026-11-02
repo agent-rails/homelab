@@ -1,7 +1,8 @@
 ollama:
   enabled: false
-ollamaUrls:
-  - http://ollama-host.ai-infra.svc.cluster.local:11434
-openaiBaseApiUrl: http://vllm-host.ai-infra.svc.cluster.local:8000/v1
+ollamaUrls: []
+openaiBaseApiUrl: http://litellm-proxy.ai-infra.svc.cluster.local:4000/v1
+openaiApiKeysExistingSecret: open-webui-openai-keys
+openaiApiKeysExistingSecretKey: keys
 persistence:
   enabled: false
