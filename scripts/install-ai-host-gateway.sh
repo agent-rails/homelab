@@ -58,12 +58,22 @@ cat >"$plist" <<EOF
 EOF
 chmod 600 "$plist"
 
+gateway_listener_pids() {
+	{
+		lsof -nP -t -iTCP:19443 -sTCP:LISTEN
+		lsof -nP -t -iTCP:19444 -sTCP:LISTEN
+		lsof -nP -t -iUDP:19443
+		lsof -nP -t -iUDP:19444
+	} 2>/dev/null | sort -u
+}
+
+plutil -lint "$plist" >/dev/null
 launchctl bootout "$domain/$label" 2>/dev/null || true
 attempt=0
-while lsof -nP -iTCP:19443 -sTCP:LISTEN >/dev/null 2>&1; do
+while [ -n "$(gateway_listener_pids)" ]; do
 	attempt=$((attempt + 1))
 	if [ "$attempt" -ge 10 ]; then
-		echo "port 19443 is already in use; stop the existing gateway first" >&2
+		echo "gateway ports 19443/19444 are already in use; stop the existing gateway first" >&2
 		exit 1
 	fi
 	sleep 1
@@ -73,7 +83,8 @@ launchctl bootstrap "$domain" "$plist"
 
 ca_cert=$state_dir/data/caddy/pki/authorities/local/root.crt
 header_file=$state_dir/probe.header
-trap 'rm -f "$header_file"' 0 1 2 15
+trap 'rm -f "$header_file"' 0
+trap 'exit 130' 1 2 15
 printf 'Authorization: Bearer %s\n' "$(cat "$state_dir/ollama.token")" >"$header_file"
 attempt=0
 until [ -s "$ca_cert" ] && curl -fsS --cacert "$ca_cert" --max-time 2 -o /dev/null \
@@ -89,9 +100,9 @@ until [ -s "$ca_cert" ] && curl -fsS --cacert "$ca_cert" --max-time 2 -o /dev/nu
 done
 
 job_pid=$(launchctl print "$domain/$label" | awk '$1 == "pid" {print $3}')
-listener_pids=$(lsof -nP -t -iTCP:19443 -sTCP:LISTEN | sort -u)
+listener_pids=$(gateway_listener_pids)
 if [ -z "$job_pid" ] || [ "$listener_pids" != "$job_pid" ]; then
-	echo "port 19443 is not served by $label alone (job pid: ${job_pid:-none}, listeners: $listener_pids)" >&2
+	echo "ports 19443/19444 are not served by $label alone (job pid: ${job_pid:-none}, listeners: $listener_pids)" >&2
 	exit 1
 fi
 
