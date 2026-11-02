@@ -104,6 +104,18 @@ if [ "$attempt" -eq 30 ]; then
 	exit 1
 fi
 
+listeners=$(lsof -nP -a -p "$caddy_pid" -iTCP -sTCP:LISTEN | awk 'NR > 1 {print $9}')
+for listener in $listeners; do
+	case "$listener" in
+		127.0.0.1:1944[34] | '[::1]:1944'[34]) ;;
+		*)
+			echo "gateway listens beyond loopback: $listener" >&2
+			exit 1
+			;;
+	esac
+done
+test -n "$listeners"
+
 status=$(curl -sS --cacert "$ca_cert" -o /dev/null -w '%{http_code}' https://localhost:19443/api/version)
 test "$status" = 401
 status=$(curl -sS --cacert "$ca_cert" -o /dev/null -w '%{http_code}' \
