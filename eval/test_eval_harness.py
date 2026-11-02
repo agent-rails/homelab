@@ -95,6 +95,7 @@ class EvalHarnessMetricsTests(unittest.TestCase):
         urlopen.return_value.__enter__.return_value = response
         case = {
             "id": "wrong-path", "prompt": "Read the allowed file",
+            "tools": [{"type": "function", "function": {"name": "read_file", "parameters": {"type": "object"}}}],
             "must_call_tool_args": {"name": "read_file", "arguments": {"path": "/allowed"}},
         }
         self.assertEqual(eval_harness.validate_cases([case]), [])
@@ -108,7 +109,36 @@ class EvalHarnessMetricsTests(unittest.TestCase):
 
     def test_malformed_tool_argument_assertion_is_rejected(self):
         case = {"id": "bad", "prompt": "Read", "must_call_tool_args": {"name": "read_file"}}
-        self.assertTrue(eval_harness.validate_cases([case]))
+        self.assertIn("case 'bad': 'must_call_tool_args' needs a tool name and argument object",
+                      eval_harness.validate_cases([case]))
+
+    def test_exact_arguments_reject_wrong_json_types_and_missing_fields(self):
+        case = {"must_call_tool_args": {"name": "update", "arguments": {"enabled": True, "count": 1}}}
+        for arguments in ({"enabled": 1, "count": 1}, {"enabled": True, "count": 1.0}, None):
+            with self.subTest(arguments=arguments):
+                self.assertTrue(eval_harness.check(case, "", ["update"],
+                    [{"name": "update", "arguments": arguments}]))
+        self.assertEqual(eval_harness.check(case, "", ["update"],
+            [{"name": "update", "arguments": {"count": 1, "enabled": True}}]), [])
+
+    @patch.object(eval_harness.urllib.request, "urlopen")
+    def test_missing_or_duplicate_tool_arguments_cannot_pass_empty_assertion(self, urlopen):
+        case = {"prompt": "Call ping", "must_call_tool_args": {"name": "ping", "arguments": {}}}
+        for function in ({"name": "ping"}, {"name": "ping", "arguments": '{"x":1,"x":2}'}):
+            response = MagicMock()
+            response.read.return_value = json.dumps({"choices": [{"message": {
+                "tool_calls": [{"function": function}],
+            }}]}).encode()
+            urlopen.return_value.__enter__.return_value = response
+            with self.subTest(function=function):
+                result = eval_harness.call_model("http://localhost:4000/v1", "fixture", case)
+                self.assertTrue(eval_harness.check(case, result[0], result[1], result[2]["tool_details"]))
+
+    def test_asserted_tool_must_be_offered(self):
+        case = {"id": "missing", "prompt": "Call ping", "tools": [],
+                "must_call_tool_args": {"name": "ping", "arguments": {}}}
+        self.assertIn("case 'missing': asserted tool 'ping' is not declared in 'tools'",
+                      eval_harness.validate_cases([case]))
 
     def test_main_fails_for_shared_failure_and_request_error(self):
         case = {"id": "c1", "prompt": "Answer", "must_contain": ["safe"]}

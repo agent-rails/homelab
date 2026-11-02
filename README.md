@@ -231,12 +231,13 @@ Run this before "promoting" any model or quantization swap. Real result the firs
 time this ran against a 4-bit MLX quant of the same model: text quality was fine
 (even slightly better on one case), but **tool-calling silently broke** — the
 quantized model stopped emitting `tool_calls` entirely on two cases the base model
-passed. Exit code is nonzero on any baseline-passed/candidate-failed case, so this
-is CI-gateable. The report also includes the response model, token usage, and
+passed. Exit code is nonzero for a regression, a case that fails on both sides,
+or a request error, so this is CI-gateable. The report also includes the response model, token usage, and
 p50/p95 request latency so model or gateway routing changes can be evaluated for
 efficiency as well as correctness.
 
-Cases can assert one exact tool call and its arguments:
+Cases can assert one exact tool call and its arguments. The asserted function
+must also appear in the case's `tools` array:
 
 ```json
 "must_call_tool_args": {"name": "read_file", "arguments": {"path": "/allowed"}}

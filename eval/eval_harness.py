@@ -48,10 +48,12 @@ def call_model(base_url, model, case, api_key=None):
     tool_calls = [tc["function"]["name"] for tc in raw_calls]
     tool_details = []
     for tc in raw_calls:
-        raw_args = tc["function"].get("arguments", "{}")
+        raw_args = tc["function"].get("arguments")
         try:
-            args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
+            args = json.loads(raw_args, object_pairs_hook=_unique_json_object) if isinstance(raw_args, str) else raw_args
         except (ValueError, TypeError):
+            args = None
+        if not isinstance(args, dict):
             args = None
         tool_details.append({"name": tc["function"]["name"], "arguments": args})
     usage = body.get("usage") or {}
@@ -63,6 +65,15 @@ def call_model(base_url, model, case, api_key=None):
         "total_tokens": usage.get("total_tokens"),
         "tool_details": tool_details,
     }
+
+
+def _unique_json_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON key: {key}")
+        result[key] = value
+    return result
 
 
 def trajectory_metrics(tool_calls):
@@ -104,7 +115,9 @@ def check(case, text, tool_calls, tool_details=None):
     if "must_call_tool_args" in case:
         expected = case["must_call_tool_args"]
         matches = [call for call in (tool_details or []) if call["name"] == expected["name"]]
-        if len(tool_details or []) != 1 or len(matches) != 1 or matches[0]["arguments"] != expected["arguments"]:
+        if (len(tool_details or []) != 1 or len(matches) != 1 or
+                not isinstance(matches[0]["arguments"], dict) or
+                json.dumps(matches[0]["arguments"], sort_keys=True) != json.dumps(expected["arguments"], sort_keys=True)):
             failures.append(f"expected only one {expected['name']!r} call with specified arguments")
     return failures
 
@@ -134,6 +147,12 @@ def validate_cases(cases):
             expected = case["must_call_tool_args"]
             if not isinstance(expected, dict) or not isinstance(expected.get("name"), str) or not expected["name"] or not isinstance(expected.get("arguments"), dict):
                 problems.append(f"case {cid!r}: 'must_call_tool_args' needs a tool name and argument object")
+            elif not any(
+                isinstance(tool, dict) and tool.get("type") == "function" and
+                isinstance(tool.get("function"), dict) and tool["function"].get("name") == expected["name"]
+                for tool in (case.get("tools") if isinstance(case.get("tools"), list) else [])
+            ):
+                problems.append(f"case {cid!r}: asserted tool {expected['name']!r} is not declared in 'tools'")
     return problems
 
 
