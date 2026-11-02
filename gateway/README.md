@@ -65,6 +65,21 @@ Stop any session-started gateway before installing: the install script refuses
 when 19443 is already listening, and Caddy's `SO_REUSEPORT` would otherwise let
 two instances share the port.
 
+Rotate upstream tokens (each consumer reads them only at start):
+
+```bash
+launchctl bootout gui/$(id -u)/dev.agent-rails.ai-gateway
+rm ~/.config/ai-gateway/ollama.token ~/.config/ai-gateway/mlx.token
+scripts/install-ai-host-gateway.sh        # creates new tokens and restarts Caddy
+scripts/sync-ai-gateway-credentials.sh
+kubectl -n ai-infra rollout restart deploy/litellm-proxy
+kubectl -n ai-infra rollout status deploy/litellm-proxy
+(cd observability && docker compose restart prometheus)
+```
+
+Then restart the `:4000` port-forward and confirm a request through LiteLLM
+returns `200` for each model alias.
+
 Stop the gateway:
 
 ```bash
@@ -82,11 +97,18 @@ done
 kubectl -n ai-infra rollout status deploy/litellm-proxy
 git show 3fef1db:k3s/ai-infra/open-webui-values.yaml > /tmp/open-webui-values.yaml
 helm upgrade open-webui open-webui/open-webui --version 16.0.0 -n ai-infra -f /tmp/open-webui-values.yaml
-git checkout 3fef1db -- observability/prometheus.yaml observability/docker-compose.yaml
+git show 3fef1db:observability/prometheus.yaml > /tmp/prometheus.yaml
+git show 3fef1db:observability/docker-compose.yaml > /tmp/docker-compose.yaml
+cp /tmp/prometheus.yaml /tmp/docker-compose.yaml observability/
 (cd observability && docker compose up -d prometheus)
 ```
 
-Then restart the `:4000` port-forward.
+Then restart the `:4000` port-forward. To remove the gateway entirely:
+
+```bash
+launchctl bootout gui/$(id -u)/dev.agent-rails.ai-gateway
+kubectl -n ai-infra delete secret ai-gateway-upstream configmap ai-gateway-ca
+```
 
 ## Known limit
 
