@@ -1,6 +1,8 @@
 import importlib.util
 import json
 import pathlib
+import sys
+import tempfile
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -34,9 +36,9 @@ class EvalHarnessMetricsTests(unittest.TestCase):
         self.assertEqual(text, "42")
         self.assertEqual(tool_calls, [])
         self.assertEqual(metrics["response_model"], "ollama-default")
-        self.assertEqual(metrics["prompt_tokens"], 0)
-        self.assertEqual(metrics["completion_tokens"], 0)
-        self.assertEqual(metrics["total_tokens"], 0)
+        self.assertIsNone(metrics["prompt_tokens"])
+        self.assertIsNone(metrics["completion_tokens"])
+        self.assertIsNone(metrics["total_tokens"])
 
     def test_percentile_uses_nearest_rank(self):
         values = [10.0, 20.0, 30.0, 40.0]
@@ -80,6 +82,58 @@ class EvalHarnessMetricsTests(unittest.TestCase):
                 "total_tokens": 14,
             },
         )
+
+    @patch.object(eval_harness.urllib.request, "urlopen")
+    def test_tool_arguments_are_checked_without_executing_tool(self, urlopen):
+        response = MagicMock()
+        response.read.return_value = json.dumps({
+            "model": "fixture",
+            "choices": [{"message": {"content": "", "tool_calls": [{
+                "function": {"name": "read_file", "arguments": '{"path":"/wrong"}'},
+            }]}}],
+        }).encode()
+        urlopen.return_value.__enter__.return_value = response
+        case = {
+            "id": "wrong-path", "prompt": "Read the allowed file",
+            "must_call_tool_args": {"name": "read_file", "arguments": {"path": "/allowed"}},
+        }
+        self.assertEqual(eval_harness.validate_cases([case]), [])
+        result = eval_harness.run_suite("http://localhost:4000/v1", "fixture", [case])
+        self.assertFalse(result["wrong-path"][0])
+        self.assertIn("specified arguments", result["wrong-path"][1][0])
+        self.assertEqual(eval_harness.check(case, "", ["read_file", "bash"], [
+            {"name": "read_file", "arguments": {"path": "/allowed"}},
+            {"name": "bash", "arguments": {"command": "echo surprise"}},
+        ]), ["expected only one 'read_file' call with specified arguments"])
+
+    def test_malformed_tool_argument_assertion_is_rejected(self):
+        case = {"id": "bad", "prompt": "Read", "must_call_tool_args": {"name": "read_file"}}
+        self.assertTrue(eval_harness.validate_cases([case]))
+
+    def test_main_fails_for_shared_failure_and_request_error(self):
+        case = {"id": "c1", "prompt": "Answer", "must_contain": ["safe"]}
+        with tempfile.TemporaryDirectory() as tmp:
+            cases_path = pathlib.Path(tmp) / "cases.json"
+            cases_path.write_text(json.dumps([case]))
+            argv = ["eval_harness.py", "--baseline", "http://baseline/v1", "--baseline-model", "base",
+                    "--candidate", "http://candidate/v1", "--candidate-model", "candidate",
+                    "--prompts", str(cases_path)]
+            for baseline, candidate in (
+                ((False, ["wrong"], self._metrics()), (False, ["wrong"], self._metrics())),
+                ((True, [], self._metrics()), (False, ["request error"], self._metrics(infra=True))),
+                ((False, ["request error"], self._metrics(infra=True)), (True, [], self._metrics())),
+            ):
+                with self.subTest(candidate=candidate[1]):
+                    with patch.object(sys, "argv", argv), patch.object(eval_harness, "run_suite", side_effect=[{"c1": baseline}, {"c1": candidate}]):
+                        with self.assertRaises(SystemExit) as exit_result:
+                            eval_harness.main()
+                    self.assertEqual(exit_result.exception.code, 1)
+
+    @staticmethod
+    def _metrics(infra=False):
+        return {"latency_ms": None if infra else 1.0, "response_model": "fixture",
+                "prompt_tokens": None, "completion_tokens": None, "total_tokens": None,
+                "tool_call_count": 0, "repeated_call_count": 0, "infra_error": infra}
 
 
 if __name__ == "__main__":

@@ -235,3 +235,15 @@ passed. Exit code is nonzero on any baseline-passed/candidate-failed case, so th
 is CI-gateable. The report also includes the response model, token usage, and
 p50/p95 request latency so model or gateway routing changes can be evaluated for
 efficiency as well as correctness.
+
+Cases can assert one exact tool call and its arguments:
+
+```json
+"must_call_tool_args": {"name": "read_file", "arguments": {"path": "/allowed"}}
+```
+
+The harness checks
+the model's proposed call; it does not execute tools. A case that fails on both
+models, a request error, or a candidate regression makes the process exit
+nonzero. Missing token usage is reported as unknown. This is a single-response
+model comparison, not a multi-step agent replay or a production safety gate.
