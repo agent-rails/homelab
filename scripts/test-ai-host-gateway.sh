@@ -105,7 +105,10 @@ if [ "$attempt" -eq 30 ]; then
 	exit 1
 fi
 
-listeners=$(lsof -nP -a -p "$caddy_pid" -iTCP -sTCP:LISTEN | awk 'NR > 1 {print $9}')
+listeners=$({
+	lsof -nP -a -p "$caddy_pid" -iTCP -sTCP:LISTEN
+	lsof -nP -a -p "$caddy_pid" -iUDP
+} | awk '$1 != "COMMAND" {print $9}')
 for listener in $listeners; do
 	case "$listener" in
 		127.0.0.1:2944[34] | '[::1]:2944'[34]) ;;
