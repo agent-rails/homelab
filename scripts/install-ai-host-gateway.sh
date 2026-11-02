@@ -59,13 +59,26 @@ EOF
 chmod 600 "$plist"
 
 launchctl bootout "$domain/$label" 2>/dev/null || true
+attempt=0
+while lsof -nP -iTCP:19443 -sTCP:LISTEN >/dev/null 2>&1; do
+	attempt=$((attempt + 1))
+	if [ "$attempt" -ge 10 ]; then
+		echo "port 19443 is already in use; stop the existing gateway first" >&2
+		exit 1
+	fi
+	sleep 1
+done
+
 launchctl bootstrap "$domain" "$plist"
 
 ca_cert=$state_dir/data/caddy/pki/authorities/local/root.crt
+header_file=$state_dir/probe.header
+trap 'rm -f "$header_file"' 0 1 2 15
+printf 'Authorization: Bearer %s\n' "$(cat "$state_dir/ollama.token")" >"$header_file"
 attempt=0
 until [ -s "$ca_cert" ] && curl -fsS --cacert "$ca_cert" --max-time 2 -o /dev/null \
 	--resolve host.orb.internal:19443:127.0.0.1 \
-	-H "Authorization: Bearer $(cat "$state_dir/ollama.token")" \
+	-H @"$header_file" \
 	https://host.orb.internal:19443/api/version 2>/dev/null; do
 	attempt=$((attempt + 1))
 	if [ "$attempt" -ge 30 ]; then
@@ -75,5 +88,12 @@ until [ -s "$ca_cert" ] && curl -fsS --cacert "$ca_cert" --max-time 2 -o /dev/nu
 	sleep 1
 done
 
-echo "gateway running as $domain/$label"
+job_pid=$(launchctl print "$domain/$label" | awk '$1 == "pid" {print $3}')
+listener_pids=$(lsof -nP -t -iTCP:19443 -sTCP:LISTEN | sort -u)
+if [ -z "$job_pid" ] || [ "$listener_pids" != "$job_pid" ]; then
+	echo "port 19443 is not served by $label alone (job pid: ${job_pid:-none}, listeners: $listener_pids)" >&2
+	exit 1
+fi
+
+echo "gateway running as $domain/$label (pid $job_pid)"
 echo "CA certificate: $ca_cert"

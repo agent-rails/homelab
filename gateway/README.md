@@ -61,6 +61,10 @@ Consumers:
   ConfigMap through `SSL_VERIFY`.
 - Prometheus mounts the MLX token and CA as compose secrets.
 
+Stop any session-started gateway before installing: the install script refuses
+when 19443 is already listening, and Caddy's `SO_REUSEPORT` would otherwise let
+two instances share the port.
+
 Stop the gateway:
 
 ```bash
@@ -78,6 +82,8 @@ done
 kubectl -n ai-infra rollout status deploy/litellm-proxy
 git show 3fef1db:k3s/ai-infra/open-webui-values.yaml > /tmp/open-webui-values.yaml
 helm upgrade open-webui open-webui/open-webui --version 16.0.0 -n ai-infra -f /tmp/open-webui-values.yaml
+git checkout 3fef1db -- observability/prometheus.yaml observability/docker-compose.yaml
+(cd observability && docker compose up -d prometheus)
 ```
 
 Then restart the `:4000` port-forward.
