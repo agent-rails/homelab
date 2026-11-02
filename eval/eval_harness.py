@@ -40,7 +40,7 @@ def call_model(base_url, model, case, api_key=None):
     )
     started = time.monotonic()
     with urllib.request.urlopen(req, timeout=60) as resp:
-        body = json.loads(resp.read())
+        body = json.loads(resp.read(), parse_constant=_reject_json_constant)
     latency_ms = (time.monotonic() - started) * 1000
     choice = body["choices"][0]["message"]
     text = (choice.get("content") or "").lower()
@@ -50,7 +50,8 @@ def call_model(base_url, model, case, api_key=None):
     for tc in raw_calls:
         raw_args = tc["function"].get("arguments")
         try:
-            args = json.loads(raw_args, object_pairs_hook=_unique_json_object) if isinstance(raw_args, str) else raw_args
+            args = (json.loads(raw_args, object_pairs_hook=_unique_json_object,
+                               parse_constant=_reject_json_constant) if isinstance(raw_args, str) else raw_args)
         except (ValueError, TypeError):
             args = None
         if not isinstance(args, dict):
@@ -74,6 +75,17 @@ def _unique_json_object(pairs):
             raise ValueError(f"duplicate JSON key: {key}")
         result[key] = value
     return result
+
+
+def _reject_json_constant(value):
+    raise ValueError(f"non-finite JSON value: {value}")
+
+
+def _canonical_json(value):
+    try:
+        return json.dumps(value, sort_keys=True, allow_nan=False)
+    except (TypeError, ValueError):
+        return None
 
 
 def trajectory_metrics(tool_calls):
@@ -117,7 +129,8 @@ def check(case, text, tool_calls, tool_details=None):
         matches = [call for call in (tool_details or []) if call["name"] == expected["name"]]
         if (len(tool_details or []) != 1 or len(matches) != 1 or
                 not isinstance(matches[0]["arguments"], dict) or
-                json.dumps(matches[0]["arguments"], sort_keys=True) != json.dumps(expected["arguments"], sort_keys=True)):
+                _canonical_json(matches[0]["arguments"]) is None or
+                _canonical_json(matches[0]["arguments"]) != _canonical_json(expected["arguments"])):
             failures.append(f"expected only one {expected['name']!r} call with specified arguments")
     return failures
 
@@ -143,16 +156,33 @@ def validate_cases(cases):
             problems.append(f"case {cid!r}: missing or empty 'prompt'")
         if not any(k in case for k in ("must_contain", "must_call_tool", "must_not_call_tool", "must_call_tool_args")):
             problems.append(f"case {cid!r}: no assertion — it can never fail, so it grades nothing")
+        tools = case.get("tools", [])
+        if not isinstance(tools, list) or any(
+            not isinstance(tool, dict) or tool.get("type") != "function" or
+            not isinstance(tool.get("function"), dict) or
+            not isinstance(tool["function"].get("name"), str) or not tool["function"]["name"]
+            for tool in tools
+        ):
+            problems.append(f"case {cid!r}: 'tools' must be a list of named function schemas")
+            offered = set()
+        else:
+            offered = {tool["function"]["name"] for tool in tools}
+        asserted_name = case.get("must_call_tool")
+        if "must_call_tool" in case and (not isinstance(asserted_name, str) or asserted_name not in offered):
+            problems.append(f"case {cid!r}: asserted tool {asserted_name!r} is not declared in 'tools'")
+        args_assertion = case.get("must_call_tool_args")
+        args_name = args_assertion.get("name") if isinstance(args_assertion, dict) else None
+        forbidden = case.get("must_not_call_tool")
+        if "must_not_call_tool" in case and forbidden is not None and forbidden in (asserted_name, args_name):
+            problems.append(f"case {cid!r}: cannot require and forbid the same tool")
         if "must_call_tool_args" in case:
             expected = case["must_call_tool_args"]
             if not isinstance(expected, dict) or not isinstance(expected.get("name"), str) or not expected["name"] or not isinstance(expected.get("arguments"), dict):
                 problems.append(f"case {cid!r}: 'must_call_tool_args' needs a tool name and argument object")
-            elif not any(
-                isinstance(tool, dict) and tool.get("type") == "function" and
-                isinstance(tool.get("function"), dict) and tool["function"].get("name") == expected["name"]
-                for tool in (case.get("tools") if isinstance(case.get("tools"), list) else [])
-            ):
+            elif expected["name"] not in offered:
                 problems.append(f"case {cid!r}: asserted tool {expected['name']!r} is not declared in 'tools'")
+            elif _canonical_json(expected["arguments"]) is None:
+                problems.append(f"case {cid!r}: 'must_call_tool_args' contains a non-JSON value")
     return problems
 
 
@@ -218,8 +248,13 @@ def main():
     ap.add_argument("--candidate-api-key", default=None, help="Bearer token for the candidate endpoint")
     args = ap.parse_args()
 
-    with open(args.prompts) as fh:
-        cases = json.load(fh)
+    try:
+        with open(args.prompts) as fh:
+            cases = json.load(fh, parse_constant=_reject_json_constant,
+                              object_pairs_hook=_unique_json_object)
+    except ValueError as exc:
+        print(f"suite rejected — invalid JSON: {exc}", file=sys.stderr)
+        sys.exit(2)
 
     problems = validate_cases(cases)
     if problems:

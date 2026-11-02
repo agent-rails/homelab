@@ -140,6 +140,28 @@ class EvalHarnessMetricsTests(unittest.TestCase):
         self.assertIn("case 'missing': asserted tool 'ping' is not declared in 'tools'",
                       eval_harness.validate_cases([case]))
 
+    def test_suite_rejects_nonfinite_and_contradictory_assertions(self):
+        tool = {"type": "function", "function": {"name": "ping"}}
+        invalid = {"id": "invalid", "prompt": "Call ping", "tools": [tool],
+                   "must_call_tool_args": {"name": "ping", "arguments": {"count": float("nan")}},
+                   "must_not_call_tool": "ping"}
+        problems = eval_harness.validate_cases([invalid])
+        self.assertTrue(any("non-JSON value" in problem for problem in problems))
+        self.assertTrue(any("cannot require and forbid" in problem for problem in problems))
+        legacy = {"id": "legacy", "prompt": "Call ping", "must_call_tool": "ping"}
+        self.assertTrue(any("not declared" in problem for problem in eval_harness.validate_cases([legacy])))
+
+    @patch.object(eval_harness.urllib.request, "urlopen")
+    def test_nonfinite_tool_argument_is_not_exact_json(self, urlopen):
+        response = MagicMock()
+        response.read.return_value = json.dumps({"choices": [{"message": {
+            "tool_calls": [{"function": {"name": "ping", "arguments": '{"count": NaN}'}}],
+        }}]}).encode()
+        urlopen.return_value.__enter__.return_value = response
+        case = {"prompt": "Call ping", "must_call_tool_args": {"name": "ping", "arguments": {"count": 1}}}
+        result = eval_harness.call_model("http://localhost:4000/v1", "fixture", case)
+        self.assertTrue(eval_harness.check(case, result[0], result[1], result[2]["tool_details"]))
+
     def test_main_fails_for_shared_failure_and_request_error(self):
         case = {"id": "c1", "prompt": "Answer", "must_contain": ["safe"]}
         with tempfile.TemporaryDirectory() as tmp:
