@@ -33,8 +33,8 @@ if ! curl -fsS --max-time 3 http://127.0.0.1:11434/api/version >/dev/null; then
 	echo "Ollama must be healthy on 127.0.0.1:11434" >&2
 	exit 1
 fi
-if lsof -nP -iTCP:19443 -sTCP:LISTEN >/dev/null 2>&1; then
-	echo "shadow port 19443 is already in use" >&2
+if lsof -nP -iTCP:29443 -sTCP:LISTEN >/dev/null 2>&1; then
+	echo "shadow port 29443 is already in use" >&2
 	exit 1
 fi
 
@@ -58,11 +58,12 @@ printf '%s\n' "$ollama_token" >"$ollama_token_file"
 printf '%s\n' "$mlx_token" >"$mlx_token_file"
 chmod 600 "$ollama_token_file" "$mlx_token_file"
 export XDG_DATA_HOME=$test_dir/data
+export OLLAMA_GATEWAY_PORT=29443 MLX_GATEWAY_PORT=29444
 export XDG_CONFIG_HOME=$test_dir/config
 
 assert_no_listeners() {
-	! lsof -nP -iTCP:19443 -sTCP:LISTEN >/dev/null 2>&1
-	! lsof -nP -iTCP:19444 -sTCP:LISTEN >/dev/null 2>&1
+	! lsof -nP -iTCP:29443 -sTCP:LISTEN >/dev/null 2>&1
+	! lsof -nP -iTCP:29444 -sTCP:LISTEN >/dev/null 2>&1
 }
 expect_refusal() {
 	if "$gateway_runner" "$@" >"$test_dir/refusal.log" 2>&1; then
@@ -92,7 +93,7 @@ attempt=0
 while [ "$attempt" -lt 30 ]; do
 	if [ -s "$ca_cert" ] && curl -fsS --cacert "$ca_cert" --max-time 1 \
 		-H "Authorization: Bearer $ollama_token" \
-		https://localhost:19443/api/version >/dev/null 2>&1; then
+		https://localhost:29443/api/version >/dev/null 2>&1; then
 		break
 	fi
 	attempt=$((attempt + 1))
@@ -107,7 +108,7 @@ fi
 listeners=$(lsof -nP -a -p "$caddy_pid" -iTCP -sTCP:LISTEN | awk 'NR > 1 {print $9}')
 for listener in $listeners; do
 	case "$listener" in
-		127.0.0.1:1944[34] | '[::1]:1944'[34]) ;;
+		127.0.0.1:2944[34] | '[::1]:2944'[34]) ;;
 		*)
 			echo "gateway listens beyond loopback: $listener" >&2
 			exit 1
@@ -116,29 +117,29 @@ for listener in $listeners; do
 done
 test -n "$listeners"
 
-status=$(curl -sS --cacert "$ca_cert" -o /dev/null -w '%{http_code}' https://localhost:19443/api/version)
+status=$(curl -sS --cacert "$ca_cert" -o /dev/null -w '%{http_code}' https://localhost:29443/api/version)
 test "$status" = 401
 status=$(curl -sS --cacert "$ca_cert" -o /dev/null -w '%{http_code}' \
-	-H 'Authorization: Bearer wrong' https://localhost:19443/api/version)
+	-H 'Authorization: Bearer wrong' https://localhost:29443/api/version)
 test "$status" = 401
 status=$(curl -sS --cacert "$ca_cert" -o /dev/null -w '%{http_code}' \
-	-H "Authorization: Bearer $ollama_token" https://localhost:19443/api/version)
+	-H "Authorization: Bearer $ollama_token" https://localhost:29443/api/version)
 test "$status" = 200
 
 for forbidden_path in /api/pull /api/push /api/delete /api/create /api/copy /unknown; do
 	status=$(curl -sS --cacert "$ca_cert" -o /dev/null -w '%{http_code}' \
 		-H "Authorization: Bearer $ollama_token" \
-		-X POST "https://localhost:19443$forbidden_path")
+		-X POST "https://localhost:29443$forbidden_path")
 	test "$status" = 404
 done
 
-status=$(curl -sS --cacert "$ca_cert" -o /dev/null -w '%{http_code}' https://localhost:19444/health)
+status=$(curl -sS --cacert "$ca_cert" -o /dev/null -w '%{http_code}' https://localhost:29444/health)
 test "$status" = 401
 status=$(curl -sS --cacert "$ca_cert" -o /dev/null -w '%{http_code}' \
-	-H 'Authorization: Bearer wrong' https://localhost:19444/health)
+	-H 'Authorization: Bearer wrong' https://localhost:29444/health)
 test "$status" = 401
 status=$(curl -sS --cacert "$ca_cert" -o /dev/null -w '%{http_code}' \
-	-H "Authorization: Bearer $mlx_token" https://localhost:19444/health)
+	-H "Authorization: Bearer $mlx_token" https://localhost:29444/health)
 test "$status" != 401
 test "$status" != 404
 
