@@ -47,7 +47,8 @@ cleanup() {
 	fi
 	rm -rf "$test_dir"
 }
-trap cleanup 0 1 2 15
+trap cleanup 0
+trap 'exit 130' 1 2 15
 
 umask 077
 ollama_token=$(openssl rand -hex 32)

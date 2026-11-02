@@ -13,7 +13,8 @@ for required in "$state_dir/ollama.token" "$state_dir/mlx.token" "$ca_cert"; do
 done
 
 work_dir=$(mktemp -d "${TMPDIR:-/tmp}/ai-gateway-sync.XXXXXX")
-trap 'rm -rf "$work_dir"' 0 1 2 15
+trap 'rm -rf "$work_dir"' 0
+trap 'exit 130' 1 2 15
 umask 077
 tr -d '\n' <"$state_dir/ollama.token" >"$work_dir/OLLAMA_GATEWAY_TOKEN"
 tr -d '\n' <"$state_dir/mlx.token" >"$work_dir/MLX_GATEWAY_TOKEN"
