@@ -40,7 +40,8 @@ def call_model(base_url, model, case, api_key=None):
     )
     started = time.monotonic()
     with urllib.request.urlopen(req, timeout=60) as resp:
-        body = json.loads(resp.read(), parse_constant=_reject_json_constant)
+        body = json.loads(resp.read(), parse_constant=_reject_json_constant,
+                          parse_float=_finite_json_float, object_pairs_hook=_unique_json_object)
     latency_ms = (time.monotonic() - started) * 1000
     choice = body["choices"][0]["message"]
     text = (choice.get("content") or "").lower()
@@ -51,7 +52,8 @@ def call_model(base_url, model, case, api_key=None):
         raw_args = tc["function"].get("arguments")
         try:
             args = (json.loads(raw_args, object_pairs_hook=_unique_json_object,
-                               parse_constant=_reject_json_constant) if isinstance(raw_args, str) else raw_args)
+                               parse_constant=_reject_json_constant,
+                               parse_float=_finite_json_float) if isinstance(raw_args, str) else None)
         except (ValueError, TypeError):
             args = None
         if not isinstance(args, dict):
@@ -79,6 +81,13 @@ def _unique_json_object(pairs):
 
 def _reject_json_constant(value):
     raise ValueError(f"non-finite JSON value: {value}")
+
+
+def _finite_json_float(value):
+    parsed = float(value)
+    if not math.isfinite(parsed):
+        raise ValueError(f"non-finite JSON number: {value}")
+    return parsed
 
 
 def _canonical_json(value):
@@ -142,9 +151,12 @@ def validate_cases(cases):
     suite would report fewer cases than it ran and the lost one could never regress.
     """
     problems, seen = [], set()
-    if not cases:
-        problems.append("suite is empty")
+    if not isinstance(cases, list) or not cases:
+        return ["suite must be a non-empty list of cases"]
     for i, case in enumerate(cases):
+        if not isinstance(case, dict):
+            problems.append(f"case #{i}: must be an object")
+            continue
         cid = case.get("id")
         if not isinstance(cid, str) or not cid.strip():
             problems.append(f"case #{i}: missing or non-string 'id'")
@@ -156,6 +168,15 @@ def validate_cases(cases):
             problems.append(f"case {cid!r}: missing or empty 'prompt'")
         if not any(k in case for k in ("must_contain", "must_call_tool", "must_not_call_tool", "must_call_tool_args")):
             problems.append(f"case {cid!r}: no assertion — it can never fail, so it grades nothing")
+        if "must_contain" in case and (
+            not isinstance(case["must_contain"], list) or not case["must_contain"] or
+            any(not isinstance(value, str) or not value for value in case["must_contain"])
+        ):
+            problems.append(f"case {cid!r}: 'must_contain' must be a non-empty list of strings")
+        if "must_not_call_tool" in case and (
+            not isinstance(case["must_not_call_tool"], str) or not case["must_not_call_tool"]
+        ):
+            problems.append(f"case {cid!r}: 'must_not_call_tool' must be a tool name")
         tools = case.get("tools", [])
         if not isinstance(tools, list) or any(
             not isinstance(tool, dict) or tool.get("type") != "function" or
@@ -172,6 +193,8 @@ def validate_cases(cases):
             problems.append(f"case {cid!r}: asserted tool {asserted_name!r} is not declared in 'tools'")
         args_assertion = case.get("must_call_tool_args")
         args_name = args_assertion.get("name") if isinstance(args_assertion, dict) else None
+        if asserted_name is not None and args_name is not None and asserted_name != args_name:
+            problems.append(f"case {cid!r}: tool assertions require different tools")
         forbidden = case.get("must_not_call_tool")
         if "must_not_call_tool" in case and forbidden is not None and forbidden in (asserted_name, args_name):
             problems.append(f"case {cid!r}: cannot require and forbid the same tool")
@@ -251,7 +274,7 @@ def main():
     try:
         with open(args.prompts) as fh:
             cases = json.load(fh, parse_constant=_reject_json_constant,
-                              object_pairs_hook=_unique_json_object)
+                              parse_float=_finite_json_float, object_pairs_hook=_unique_json_object)
     except ValueError as exc:
         print(f"suite rejected — invalid JSON: {exc}", file=sys.stderr)
         sys.exit(2)

@@ -150,6 +150,29 @@ class EvalHarnessMetricsTests(unittest.TestCase):
         self.assertTrue(any("cannot require and forbid" in problem for problem in problems))
         legacy = {"id": "legacy", "prompt": "Call ping", "must_call_tool": "ping"}
         self.assertTrue(any("not declared" in problem for problem in eval_harness.validate_cases([legacy])))
+        conflict = {"id": "conflict", "prompt": "Call ping", "tools": [tool,
+                    {"type": "function", "function": {"name": "pong"}}],
+                    "must_call_tool": "ping", "must_call_tool_args": {"name": "pong", "arguments": {}}}
+        self.assertTrue(any("different tools" in problem for problem in eval_harness.validate_cases([conflict])))
+        self.assertTrue(eval_harness.validate_cases({"id": "not-a-list"}))
+        self.assertTrue(eval_harness.validate_cases([None]))
+
+    @patch.object(eval_harness.urllib.request, "urlopen")
+    def test_non_string_arguments_and_duplicate_response_keys_fail(self, urlopen):
+        case = {"prompt": "Call ping", "must_call_tool_args": {"name": "ping", "arguments": {"x": 1}}}
+        response = MagicMock()
+        response.read.return_value = json.dumps({"choices": [{"message": {
+            "tool_calls": [{"function": {"name": "ping", "arguments": {"x": 1}}}],
+        }}]}).encode()
+        urlopen.return_value.__enter__.return_value = response
+        result = eval_harness.call_model("http://localhost:4000/v1", "fixture", case)
+        self.assertTrue(eval_harness.check(case, result[0], result[1], result[2]["tool_details"]))
+        response.read.return_value = b'{"choices":[],"choices":[]}'
+        with self.assertRaisesRegex(ValueError, "duplicate JSON key"):
+            eval_harness.call_model("http://localhost:4000/v1", "fixture", case)
+        response.read.return_value = b'{"choices":[{"message":{"content":"ok"}}],"usage":{"total_tokens":1e400}}'
+        with self.assertRaisesRegex(ValueError, "non-finite JSON number"):
+            eval_harness.call_model("http://localhost:4000/v1", "fixture", case)
 
     @patch.object(eval_harness.urllib.request, "urlopen")
     def test_nonfinite_tool_argument_is_not_exact_json(self, urlopen):
