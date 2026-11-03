@@ -15,6 +15,7 @@ import math
 import sys
 import time
 import urllib.request
+from decimal import Decimal
 
 
 def call_model(base_url, model, case, api_key=None):
@@ -45,20 +46,30 @@ def call_model(base_url, model, case, api_key=None):
     latency_ms = (time.monotonic() - started) * 1000
     choice = body["choices"][0]["message"]
     text = (choice.get("content") or "").lower()
-    raw_calls = choice.get("tool_calls") or []
-    tool_calls = [tc["function"]["name"] for tc in raw_calls]
+    raw_calls = choice.get("tool_calls")
+    if raw_calls is None:
+        raw_calls = []
+    if not isinstance(raw_calls, list):
+        raise ValueError("tool_calls must be a list or null")
+    tool_calls = []
     tool_details = []
     for tc in raw_calls:
-        raw_args = tc["function"].get("arguments")
+        if not isinstance(tc, dict) or not isinstance(tc.get("function"), dict):
+            raise ValueError("tool call needs a function object")
+        function = tc["function"]
+        name = function.get("name")
+        raw_args = function.get("arguments")
+        if not isinstance(name, str) or not name or not isinstance(raw_args, str):
+            raise ValueError("tool call needs a function name and JSON arguments string")
         try:
-            args = (json.loads(raw_args, object_pairs_hook=_unique_json_object,
-                               parse_constant=_reject_json_constant,
-                               parse_float=_finite_json_float) if isinstance(raw_args, str) else None)
-        except (ValueError, TypeError):
-            args = None
+            args = json.loads(raw_args, object_pairs_hook=_unique_json_object,
+                              parse_constant=_reject_json_constant, parse_float=_finite_json_float)
+        except (ValueError, TypeError) as exc:
+            raise ValueError(f"tool {name!r} has invalid JSON arguments") from exc
         if not isinstance(args, dict):
-            args = None
-        tool_details.append({"name": tc["function"]["name"], "arguments": args})
+            raise ValueError(f"tool {name!r} arguments must be a JSON object")
+        tool_calls.append(name)
+        tool_details.append({"name": name, "arguments": args})
     usage = body.get("usage") or {}
     return text, tool_calls, {
         "latency_ms": latency_ms,
@@ -87,14 +98,35 @@ def _finite_json_float(value):
     parsed = float(value)
     if not math.isfinite(parsed):
         raise ValueError(f"non-finite JSON number: {value}")
-    return parsed
+    return Decimal(value)
 
 
 def _canonical_json(value):
     try:
-        return json.dumps(value, sort_keys=True, allow_nan=False)
-    except (TypeError, ValueError):
+        return _typed_json_value(value)
+    except (TypeError, ValueError, ArithmeticError):
         return None
+
+
+def _typed_json_value(value):
+    if value is None:
+        return ("null",)
+    if type(value) is bool:
+        return ("bool", value)
+    if type(value) is int:
+        return ("int", value)
+    if isinstance(value, (Decimal, float)):
+        number = value if isinstance(value, Decimal) else Decimal(str(value))
+        if not number.is_finite():
+            raise ValueError("non-finite number")
+        return ("decimal", number.normalize().as_tuple())
+    if isinstance(value, str):
+        return ("str", value)
+    if isinstance(value, list):
+        return ("list", tuple(_typed_json_value(item) for item in value))
+    if isinstance(value, dict) and all(isinstance(key, str) for key in value):
+        return ("dict", tuple((key, _typed_json_value(value[key])) for key in sorted(value)))
+    raise TypeError("not a JSON value")
 
 
 def trajectory_metrics(tool_calls):

@@ -131,8 +131,8 @@ class EvalHarnessMetricsTests(unittest.TestCase):
             }}]}).encode()
             urlopen.return_value.__enter__.return_value = response
             with self.subTest(function=function):
-                result = eval_harness.call_model("http://localhost:4000/v1", "fixture", case)
-                self.assertTrue(eval_harness.check(case, result[0], result[1], result[2]["tool_details"]))
+                with self.assertRaises(ValueError):
+                    eval_harness.call_model("http://localhost:4000/v1", "fixture", case)
 
     def test_asserted_tool_must_be_offered(self):
         case = {"id": "missing", "prompt": "Call ping", "tools": [],
@@ -165,8 +165,8 @@ class EvalHarnessMetricsTests(unittest.TestCase):
             "tool_calls": [{"function": {"name": "ping", "arguments": {"x": 1}}}],
         }}]}).encode()
         urlopen.return_value.__enter__.return_value = response
-        result = eval_harness.call_model("http://localhost:4000/v1", "fixture", case)
-        self.assertTrue(eval_harness.check(case, result[0], result[1], result[2]["tool_details"]))
+        with self.assertRaisesRegex(ValueError, "JSON arguments string"):
+            eval_harness.call_model("http://localhost:4000/v1", "fixture", case)
         response.read.return_value = b'{"choices":[],"choices":[]}'
         with self.assertRaisesRegex(ValueError, "duplicate JSON key"):
             eval_harness.call_model("http://localhost:4000/v1", "fixture", case)
@@ -182,8 +182,34 @@ class EvalHarnessMetricsTests(unittest.TestCase):
         }}]}).encode()
         urlopen.return_value.__enter__.return_value = response
         case = {"prompt": "Call ping", "must_call_tool_args": {"name": "ping", "arguments": {"count": 1}}}
-        result = eval_harness.call_model("http://localhost:4000/v1", "fixture", case)
-        self.assertTrue(eval_harness.check(case, result[0], result[1], result[2]["tool_details"]))
+        with self.assertRaisesRegex(ValueError, "invalid JSON arguments"):
+            eval_harness.call_model("http://localhost:4000/v1", "fixture", case)
+
+    @patch.object(eval_harness.urllib.request, "urlopen")
+    def test_exact_numbers_do_not_round_into_expected_value(self, urlopen):
+        response = MagicMock()
+        urlopen.return_value.__enter__.return_value = response
+        for raw_number, expected in (("1e-400", 0.0), ("9007199254740993.0", 9007199254740992.0)):
+            response.read.return_value = json.dumps({"choices": [{"message": {
+                "tool_calls": [{"function": {"name": "ping", "arguments": '{"x":' + raw_number + '}'}}],
+            }}]}).encode()
+            case = {"prompt": "Call ping", "must_call_tool_args": {"name": "ping", "arguments": {"x": expected}}}
+            with self.subTest(raw_number=raw_number):
+                result = eval_harness.call_model("http://localhost:4000/v1", "fixture", case)
+                self.assertTrue(eval_harness.check(case, result[0], result[1], result[2]["tool_details"]))
+
+    @patch.object(eval_harness.urllib.request, "urlopen")
+    def test_malformed_tool_calls_fail_even_for_name_only_assertions(self, urlopen):
+        response = MagicMock()
+        urlopen.return_value.__enter__.return_value = response
+        case = {"id": "malformed", "prompt": "Call ping", "must_call_tool": "ping"}
+        for tool_calls in ({}, 0, [{"function": {"name": "ping", "arguments": "not json"}}],
+                           [{"function": {"name": 123, "arguments": "{}"}}]):
+            response.read.return_value = json.dumps({"choices": [{"message": {"tool_calls": tool_calls}}]}).encode()
+            with self.subTest(tool_calls=tool_calls):
+                result = eval_harness.run_suite("http://localhost:4000/v1", "fixture", [case])["malformed"]
+                self.assertFalse(result[0])
+                self.assertTrue(result[2]["infra_error"])
 
     def test_main_fails_for_shared_failure_and_request_error(self):
         case = {"id": "c1", "prompt": "Answer", "must_contain": ["safe"]}
