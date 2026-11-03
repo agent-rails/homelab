@@ -121,6 +121,8 @@ def _typed_json_value(value):
         if not number.is_finite():
             raise ValueError("non-finite number")
         sign, digits, exponent = number.as_tuple()
+        if all(digit == 0 for digit in digits):
+            return ("decimal", sign, (0,), 0)
         digits = list(digits)
         while len(digits) > 1 and digits[-1] == 0:
             digits.pop()

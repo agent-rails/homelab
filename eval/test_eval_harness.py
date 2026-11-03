@@ -200,6 +200,15 @@ class EvalHarnessMetricsTests(unittest.TestCase):
                 result = eval_harness.call_model("http://localhost:4000/v1", "fixture", case)
                 self.assertTrue(eval_harness.check(case, result[0], result[1], result[2]["tool_details"]))
 
+        for raw_number in ("0.00", "0e5", "0.0e-3"):
+            response.read.return_value = json.dumps({"choices": [{"message": {
+                "tool_calls": [{"type": "function", "function": {"name": "ping", "arguments": '{"x":' + raw_number + '}'}}],
+            }}]}).encode()
+            case = {"prompt": "Call ping", "must_call_tool_args": {"name": "ping", "arguments": {"x": 0.0}}}
+            with self.subTest(equal_zero=raw_number):
+                result = eval_harness.call_model("http://localhost:4000/v1", "fixture", case)
+                self.assertEqual(eval_harness.check(case, result[0], result[1], result[2]["tool_details"]), [])
+
     @patch.object(eval_harness.urllib.request, "urlopen")
     def test_fractional_tool_schema_is_serialized(self, urlopen):
         response = MagicMock()
