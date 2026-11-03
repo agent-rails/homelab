@@ -89,6 +89,7 @@ class EvalHarnessMetricsTests(unittest.TestCase):
         response.read.return_value = json.dumps({
             "model": "fixture",
             "choices": [{"message": {"content": "", "tool_calls": [{
+                "type": "function",
                 "function": {"name": "read_file", "arguments": '{"path":"/wrong"}'},
             }]}}],
         }).encode()
@@ -127,7 +128,7 @@ class EvalHarnessMetricsTests(unittest.TestCase):
         for function in ({"name": "ping"}, {"name": "ping", "arguments": '{"x":1,"x":2}'}):
             response = MagicMock()
             response.read.return_value = json.dumps({"choices": [{"message": {
-                "tool_calls": [{"function": function}],
+                "tool_calls": [{"type": "function", "function": function}],
             }}]}).encode()
             urlopen.return_value.__enter__.return_value = response
             with self.subTest(function=function):
@@ -162,7 +163,7 @@ class EvalHarnessMetricsTests(unittest.TestCase):
         case = {"prompt": "Call ping", "must_call_tool_args": {"name": "ping", "arguments": {"x": 1}}}
         response = MagicMock()
         response.read.return_value = json.dumps({"choices": [{"message": {
-            "tool_calls": [{"function": {"name": "ping", "arguments": {"x": 1}}}],
+            "tool_calls": [{"type": "function", "function": {"name": "ping", "arguments": {"x": 1}}}],
         }}]}).encode()
         urlopen.return_value.__enter__.return_value = response
         with self.assertRaisesRegex(ValueError, "JSON arguments string"):
@@ -178,7 +179,7 @@ class EvalHarnessMetricsTests(unittest.TestCase):
     def test_nonfinite_tool_argument_is_not_exact_json(self, urlopen):
         response = MagicMock()
         response.read.return_value = json.dumps({"choices": [{"message": {
-            "tool_calls": [{"function": {"name": "ping", "arguments": '{"count": NaN}'}}],
+            "tool_calls": [{"type": "function", "function": {"name": "ping", "arguments": '{"count": NaN}'}}],
         }}]}).encode()
         urlopen.return_value.__enter__.return_value = response
         case = {"prompt": "Call ping", "must_call_tool_args": {"name": "ping", "arguments": {"count": 1}}}
@@ -189,9 +190,10 @@ class EvalHarnessMetricsTests(unittest.TestCase):
     def test_exact_numbers_do_not_round_into_expected_value(self, urlopen):
         response = MagicMock()
         urlopen.return_value.__enter__.return_value = response
-        for raw_number, expected in (("1e-400", 0.0), ("9007199254740993.0", 9007199254740992.0)):
+        for raw_number, expected in (("1e-400", 0.0), ("9007199254740993.0", 9007199254740992.0),
+                                     ("1.00000000000000000000000000001", 1.0), ("1e-1000030", 0.0)):
             response.read.return_value = json.dumps({"choices": [{"message": {
-                "tool_calls": [{"function": {"name": "ping", "arguments": '{"x":' + raw_number + '}'}}],
+                "tool_calls": [{"type": "function", "function": {"name": "ping", "arguments": '{"x":' + raw_number + '}'}}],
             }}]}).encode()
             case = {"prompt": "Call ping", "must_call_tool_args": {"name": "ping", "arguments": {"x": expected}}}
             with self.subTest(raw_number=raw_number):
@@ -199,12 +201,27 @@ class EvalHarnessMetricsTests(unittest.TestCase):
                 self.assertTrue(eval_harness.check(case, result[0], result[1], result[2]["tool_details"]))
 
     @patch.object(eval_harness.urllib.request, "urlopen")
+    def test_fractional_tool_schema_is_serialized(self, urlopen):
+        response = MagicMock()
+        response.read.return_value = b'{"choices":[{"message":{"content":"ok"}}]}'
+        urlopen.return_value.__enter__.return_value = response
+        case = json.loads('{"prompt":"Call ping","tools":[{"type":"function","function":'
+                          '{"name":"ping","parameters":{"type":"object","properties":'
+                          '{"x":{"type":"number","minimum":0.5}}}}}]}',
+                          parse_float=eval_harness._finite_json_float)
+        self.assertEqual(eval_harness.validate_cases([{**case, "id": "fractional", "must_not_call_tool": "other"}]), [])
+        eval_harness.call_model("http://localhost:4000/v1", "fixture", case)
+        request = urlopen.call_args.args[0]
+        self.assertIn(b'"minimum":0.5', request.data)
+
+    @patch.object(eval_harness.urllib.request, "urlopen")
     def test_malformed_tool_calls_fail_even_for_name_only_assertions(self, urlopen):
         response = MagicMock()
         urlopen.return_value.__enter__.return_value = response
         case = {"id": "malformed", "prompt": "Call ping", "must_call_tool": "ping"}
-        for tool_calls in ({}, 0, [{"function": {"name": "ping", "arguments": "not json"}}],
-                           [{"function": {"name": 123, "arguments": "{}"}}]):
+        for tool_calls in ({}, 0, [{"type": "function", "function": {"name": "ping", "arguments": "not json"}}],
+                           [{"type": "function", "function": {"name": 123, "arguments": "{}"}}],
+                           [{"type": "other", "function": {"name": "ping", "arguments": "{}"}}]):
             response.read.return_value = json.dumps({"choices": [{"message": {"tool_calls": tool_calls}}]}).encode()
             with self.subTest(tool_calls=tool_calls):
                 result = eval_harness.run_suite("http://localhost:4000/v1", "fixture", [case])["malformed"]

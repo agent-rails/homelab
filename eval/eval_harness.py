@@ -36,7 +36,7 @@ def call_model(base_url, model, case, api_key=None):
 
     req = urllib.request.Request(
         f"{base_url}/chat/completions",
-        data=json.dumps(payload).encode(),
+        data=_dump_json(payload).encode(),
         headers=headers,
     )
     started = time.monotonic()
@@ -54,7 +54,8 @@ def call_model(base_url, model, case, api_key=None):
     tool_calls = []
     tool_details = []
     for tc in raw_calls:
-        if not isinstance(tc, dict) or not isinstance(tc.get("function"), dict):
+        if (not isinstance(tc, dict) or tc.get("type") != "function" or
+                not isinstance(tc.get("function"), dict)):
             raise ValueError("tool call needs a function object")
         function = tc["function"]
         name = function.get("name")
@@ -119,7 +120,12 @@ def _typed_json_value(value):
         number = value if isinstance(value, Decimal) else Decimal(str(value))
         if not number.is_finite():
             raise ValueError("non-finite number")
-        return ("decimal", number.normalize().as_tuple())
+        sign, digits, exponent = number.as_tuple()
+        digits = list(digits)
+        while len(digits) > 1 and digits[-1] == 0:
+            digits.pop()
+            exponent += 1
+        return ("decimal", sign, tuple(digits), exponent)
     if isinstance(value, str):
         return ("str", value)
     if isinstance(value, list):
@@ -127,6 +133,21 @@ def _typed_json_value(value):
     if isinstance(value, dict) and all(isinstance(key, str) for key in value):
         return ("dict", tuple((key, _typed_json_value(value[key])) for key in sorted(value)))
     raise TypeError("not a JSON value")
+
+
+def _dump_json(value):
+    """Encode a request without rounding Decimal values loaded from a suite."""
+    if isinstance(value, Decimal):
+        if not value.is_finite():
+            raise ValueError("non-finite JSON number")
+        return str(value)
+    if isinstance(value, dict):
+        if not all(isinstance(key, str) for key in value):
+            raise TypeError("JSON object keys must be strings")
+        return "{" + ",".join(json.dumps(key) + ":" + _dump_json(item) for key, item in value.items()) + "}"
+    if isinstance(value, list):
+        return "[" + ",".join(_dump_json(item) for item in value) + "]"
+    return json.dumps(value, allow_nan=False)
 
 
 def trajectory_metrics(tool_calls):

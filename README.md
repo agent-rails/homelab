@@ -244,6 +244,8 @@ must also appear in the case's `tools` array:
 
 The harness checks the model's proposed call; it does not execute tools.
 Argument comparison preserves JSON value types: `true`, `1`, and `1.0` differ.
+Tool calls must include `type: "function"` and a JSON object encoded as an
+`arguments` string. Numeric decimals are compared without binary-float rounding.
 A case that fails on both
 models, a request error, or a candidate regression makes the process exit
 nonzero. Missing token usage is reported as unknown. This is a single-response
