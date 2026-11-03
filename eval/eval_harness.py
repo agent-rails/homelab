@@ -15,6 +15,7 @@ import math
 import sys
 import time
 import urllib.request
+from decimal import Decimal
 
 
 def call_model(base_url, model, case, api_key=None):
@@ -35,24 +36,120 @@ def call_model(base_url, model, case, api_key=None):
 
     req = urllib.request.Request(
         f"{base_url}/chat/completions",
-        data=json.dumps(payload).encode(),
+        data=_dump_json(payload).encode(),
         headers=headers,
     )
     started = time.monotonic()
     with urllib.request.urlopen(req, timeout=60) as resp:
-        body = json.loads(resp.read())
+        body = json.loads(resp.read(), parse_constant=_reject_json_constant,
+                          parse_float=_finite_json_float, object_pairs_hook=_unique_json_object)
     latency_ms = (time.monotonic() - started) * 1000
     choice = body["choices"][0]["message"]
     text = (choice.get("content") or "").lower()
-    tool_calls = [tc["function"]["name"] for tc in (choice.get("tool_calls") or [])]
+    raw_calls = choice.get("tool_calls")
+    if raw_calls is None:
+        raw_calls = []
+    if not isinstance(raw_calls, list):
+        raise ValueError("tool_calls must be a list or null")
+    tool_calls = []
+    tool_details = []
+    for tc in raw_calls:
+        if (not isinstance(tc, dict) or tc.get("type") != "function" or
+                not isinstance(tc.get("function"), dict)):
+            raise ValueError("tool call needs a function object")
+        function = tc["function"]
+        name = function.get("name")
+        raw_args = function.get("arguments")
+        if not isinstance(name, str) or not name or not isinstance(raw_args, str):
+            raise ValueError("tool call needs a function name and JSON arguments string")
+        try:
+            args = json.loads(raw_args, object_pairs_hook=_unique_json_object,
+                              parse_constant=_reject_json_constant, parse_float=_finite_json_float)
+        except (ValueError, TypeError) as exc:
+            raise ValueError(f"tool {name!r} has invalid JSON arguments") from exc
+        if not isinstance(args, dict):
+            raise ValueError(f"tool {name!r} arguments must be a JSON object")
+        tool_calls.append(name)
+        tool_details.append({"name": name, "arguments": args})
     usage = body.get("usage") or {}
     return text, tool_calls, {
         "latency_ms": latency_ms,
         "response_model": body.get("model"),
-        "prompt_tokens": usage.get("prompt_tokens") or 0,
-        "completion_tokens": usage.get("completion_tokens") or 0,
-        "total_tokens": usage.get("total_tokens") or 0,
+        "prompt_tokens": usage.get("prompt_tokens"),
+        "completion_tokens": usage.get("completion_tokens"),
+        "total_tokens": usage.get("total_tokens"),
+        "tool_details": tool_details,
     }
+
+
+def _unique_json_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON key: {key}")
+        result[key] = value
+    return result
+
+
+def _reject_json_constant(value):
+    raise ValueError(f"non-finite JSON value: {value}")
+
+
+def _finite_json_float(value):
+    parsed = float(value)
+    if not math.isfinite(parsed):
+        raise ValueError(f"non-finite JSON number: {value}")
+    return Decimal(value)
+
+
+def _canonical_json(value):
+    try:
+        return _typed_json_value(value)
+    except (TypeError, ValueError, ArithmeticError):
+        return None
+
+
+def _typed_json_value(value):
+    if value is None:
+        return ("null",)
+    if type(value) is bool:
+        return ("bool", value)
+    if type(value) is int:
+        return ("int", value)
+    if isinstance(value, (Decimal, float)):
+        number = value if isinstance(value, Decimal) else Decimal(str(value))
+        if not number.is_finite():
+            raise ValueError("non-finite number")
+        sign, digits, exponent = number.as_tuple()
+        if all(digit == 0 for digit in digits):
+            return ("decimal", sign, (0,), 0)
+        digits = list(digits)
+        while len(digits) > 1 and digits[-1] == 0:
+            digits.pop()
+            exponent += 1
+        return ("decimal", sign, tuple(digits), exponent)
+    if isinstance(value, str):
+        return ("str", value)
+    if isinstance(value, list):
+        return ("list", tuple(_typed_json_value(item) for item in value))
+    if isinstance(value, dict) and all(isinstance(key, str) for key in value):
+        return ("dict", tuple((key, _typed_json_value(value[key])) for key in sorted(value)))
+    raise TypeError("not a JSON value")
+
+
+def _dump_json(value):
+    """Encode a request without rounding Decimal values loaded from a suite."""
+    if isinstance(value, Decimal):
+        if not value.is_finite():
+            raise ValueError("non-finite JSON number")
+        return str(value)
+    if isinstance(value, dict):
+        if not all(isinstance(key, str) for key in value):
+            raise TypeError("JSON object keys must be strings")
+        return "{" + ",".join(json.dumps(key) + ":" + _dump_json(item) for key, item in value.items()) + "}"
+    if isinstance(value, list):
+        return "[" + ",".join(_dump_json(item) for item in value) + "]"
+    return json.dumps(value, allow_nan=False)
 
 
 def trajectory_metrics(tool_calls):
@@ -74,7 +171,7 @@ def trajectory_metrics(tool_calls):
     return {"tool_call_count": tool_call_count, "repeated_call_count": repeated_call_count}
 
 
-def check(case, text, tool_calls):
+def check(case, text, tool_calls, tool_details=None):
     failures = []
     if "must_contain" in case:
         if not any(s.lower() in text for s in case["must_contain"]):
@@ -91,6 +188,14 @@ def check(case, text, tool_calls):
     if "must_not_call_tool" in case:
         if case["must_not_call_tool"] in tool_calls:
             failures.append(f"expected NO call to {case['must_not_call_tool']!r}, but it was called")
+    if "must_call_tool_args" in case:
+        expected = case["must_call_tool_args"]
+        matches = [call for call in (tool_details or []) if call["name"] == expected["name"]]
+        if (len(tool_details or []) != 1 or len(matches) != 1 or
+                not isinstance(matches[0]["arguments"], dict) or
+                _canonical_json(matches[0]["arguments"]) is None or
+                _canonical_json(matches[0]["arguments"]) != _canonical_json(expected["arguments"])):
+            failures.append(f"expected only one {expected['name']!r} call with specified arguments")
     return failures
 
 
@@ -101,9 +206,12 @@ def validate_cases(cases):
     suite would report fewer cases than it ran and the lost one could never regress.
     """
     problems, seen = [], set()
-    if not cases:
-        problems.append("suite is empty")
+    if not isinstance(cases, list) or not cases:
+        return ["suite must be a non-empty list of cases"]
     for i, case in enumerate(cases):
+        if not isinstance(case, dict):
+            problems.append(f"case #{i}: must be an object")
+            continue
         cid = case.get("id")
         if not isinstance(cid, str) or not cid.strip():
             problems.append(f"case #{i}: missing or non-string 'id'")
@@ -113,8 +221,46 @@ def validate_cases(cases):
         seen.add(cid)
         if not isinstance(case.get("prompt"), str) or not case["prompt"].strip():
             problems.append(f"case {cid!r}: missing or empty 'prompt'")
-        if not any(k in case for k in ("must_contain", "must_call_tool", "must_not_call_tool")):
+        if not any(k in case for k in ("must_contain", "must_call_tool", "must_not_call_tool", "must_call_tool_args")):
             problems.append(f"case {cid!r}: no assertion — it can never fail, so it grades nothing")
+        if "must_contain" in case and (
+            not isinstance(case["must_contain"], list) or not case["must_contain"] or
+            any(not isinstance(value, str) or not value for value in case["must_contain"])
+        ):
+            problems.append(f"case {cid!r}: 'must_contain' must be a non-empty list of strings")
+        if "must_not_call_tool" in case and (
+            not isinstance(case["must_not_call_tool"], str) or not case["must_not_call_tool"]
+        ):
+            problems.append(f"case {cid!r}: 'must_not_call_tool' must be a tool name")
+        tools = case.get("tools", [])
+        if not isinstance(tools, list) or any(
+            not isinstance(tool, dict) or tool.get("type") != "function" or
+            not isinstance(tool.get("function"), dict) or
+            not isinstance(tool["function"].get("name"), str) or not tool["function"]["name"]
+            for tool in tools
+        ):
+            problems.append(f"case {cid!r}: 'tools' must be a list of named function schemas")
+            offered = set()
+        else:
+            offered = {tool["function"]["name"] for tool in tools}
+        asserted_name = case.get("must_call_tool")
+        if "must_call_tool" in case and (not isinstance(asserted_name, str) or asserted_name not in offered):
+            problems.append(f"case {cid!r}: asserted tool {asserted_name!r} is not declared in 'tools'")
+        args_assertion = case.get("must_call_tool_args")
+        args_name = args_assertion.get("name") if isinstance(args_assertion, dict) else None
+        if asserted_name is not None and args_name is not None and asserted_name != args_name:
+            problems.append(f"case {cid!r}: tool assertions require different tools")
+        forbidden = case.get("must_not_call_tool")
+        if "must_not_call_tool" in case and forbidden is not None and forbidden in (asserted_name, args_name):
+            problems.append(f"case {cid!r}: cannot require and forbid the same tool")
+        if "must_call_tool_args" in case:
+            expected = case["must_call_tool_args"]
+            if not isinstance(expected, dict) or not isinstance(expected.get("name"), str) or not expected["name"] or not isinstance(expected.get("arguments"), dict):
+                problems.append(f"case {cid!r}: 'must_call_tool_args' needs a tool name and argument object")
+            elif expected["name"] not in offered:
+                problems.append(f"case {cid!r}: asserted tool {expected['name']!r} is not declared in 'tools'")
+            elif _canonical_json(expected["arguments"]) is None:
+                problems.append(f"case {cid!r}: 'must_call_tool_args' contains a non-JSON value")
     return problems
 
 
@@ -123,7 +269,7 @@ def run_suite(base_url, model, cases, api_key=None):
     for case in cases:
         try:
             text, tool_calls, request_metrics = call_model(base_url, model, case, api_key=api_key)
-            failures = check(case, text, tool_calls)
+            failures = check(case, text, tool_calls, request_metrics.get("tool_details"))
             metrics = {**trajectory_metrics(tool_calls), **request_metrics}
             results[case["id"]] = (len(failures) == 0, failures, metrics)
         except Exception as e:
@@ -135,9 +281,10 @@ def run_suite(base_url, model, cases, api_key=None):
                     "repeated_call_count": 0,
                     "latency_ms": None,
                     "response_model": None,
-                    "prompt_tokens": 0,
-                    "completion_tokens": 0,
-                    "total_tokens": 0,
+                    "prompt_tokens": None,
+                    "completion_tokens": None,
+                    "total_tokens": None,
+                    "infra_error": True,
                 },
             )
     return results
@@ -154,13 +301,17 @@ def percentile(values, percentile_value):
 def suite_metrics(results):
     completed = [metrics for _, _, metrics in results.values() if metrics["latency_ms"] is not None]
     latencies = [metrics["latency_ms"] for metrics in completed]
+    def total_or_unknown(field):
+        values = [metrics.get(field) for metrics in completed]
+        return sum(values) if values and all(value is not None for value in values) else None
+
     return {
         "completed": len(completed),
         "p50_latency_ms": percentile(latencies, 50),
         "p95_latency_ms": percentile(latencies, 95),
-        "prompt_tokens": sum(metrics["prompt_tokens"] for metrics in completed),
-        "completion_tokens": sum(metrics["completion_tokens"] for metrics in completed),
-        "total_tokens": sum(metrics["total_tokens"] for metrics in completed),
+        "prompt_tokens": total_or_unknown("prompt_tokens"),
+        "completion_tokens": total_or_unknown("completion_tokens"),
+        "total_tokens": total_or_unknown("total_tokens"),
     }
 
 
@@ -175,8 +326,13 @@ def main():
     ap.add_argument("--candidate-api-key", default=None, help="Bearer token for the candidate endpoint")
     args = ap.parse_args()
 
-    with open(args.prompts) as fh:
-        cases = json.load(fh)
+    try:
+        with open(args.prompts) as fh:
+            cases = json.load(fh, parse_constant=_reject_json_constant,
+                              parse_float=_finite_json_float, object_pairs_hook=_unique_json_object)
+    except ValueError as exc:
+        print(f"suite rejected — invalid JSON: {exc}", file=sys.stderr)
+        sys.exit(2)
 
     problems = validate_cases(cases)
     if problems:
@@ -202,7 +358,7 @@ def main():
         b_mark = "PASS" if b_pass else "FAIL"
         c_mark = "PASS" if c_pass else "FAIL"
         flag = ""
-        if b_pass and not c_pass:
+        if b_pass and not c_pass and not c_metrics.get("infra_error"):
             flag = "  <-- REGRESSION"
             regressions.append(cid)
         total_calls += c_metrics["tool_call_count"]
@@ -212,7 +368,7 @@ def main():
             f"{cid:28s} baseline={b_mark:4s} candidate={c_mark:4s} "
             f"calls={c_metrics['tool_call_count']} "
             f"latency_ms={c_metrics['latency_ms']:.1f} "
-            f"tokens={c_metrics['total_tokens']} "
+            f"tokens={c_metrics['total_tokens'] if c_metrics['total_tokens'] is not None else 'UNKNOWN'} "
             f"model={c_metrics['response_model']}{flag}{repeat_flag}"
             if c_metrics["latency_ms"] is not None
             else f"{cid:28s} baseline={b_mark:4s} candidate={c_mark:4s} request_failed{flag}"
@@ -226,14 +382,15 @@ def main():
     shared_failures = [
         c["id"] for c in cases
         if not baseline_results[c["id"]][0] and not candidate_results[c["id"]][0]
+        and not baseline_results[c["id"]][2].get("infra_error")
         and not candidate_results[c["id"]][2].get("infra_error")
     ]
     infra_errors = [c["id"] for c in cases if candidate_results[c["id"]][2].get("infra_error")
                     or baseline_results[c["id"]][2].get("infra_error")]
 
     def usage_total(results):
-        known = [r[2]["usage"].get("total_tokens") for r in results.values()
-                 if r[2].get("usage") and r[2]["usage"].get("total_tokens") is not None]
+        known = [r[2].get("total_tokens") for r in results.values()
+                 if r[2].get("total_tokens") is not None]
         missing = len(results) - len(known)
         return sum(known), missing
 
@@ -258,10 +415,11 @@ def main():
         p95 = f"{metrics['p95_latency_ms']:.1f}" if metrics["p95_latency_ms"] is not None else "n/a"
         print(
             f"{label} inference: completed={metrics['completed']}/{len(cases)} "
-            f"p50_ms={p50} p95_ms={p95} total_tokens={metrics['total_tokens']} "
-            f"prompt_tokens={metrics['prompt_tokens']} completion_tokens={metrics['completion_tokens']}"
+            f"p50_ms={p50} p95_ms={p95} total_tokens={metrics['total_tokens'] if metrics['total_tokens'] is not None else 'UNKNOWN'} "
+            f"prompt_tokens={metrics['prompt_tokens'] if metrics['prompt_tokens'] is not None else 'UNKNOWN'} "
+            f"completion_tokens={metrics['completion_tokens'] if metrics['completion_tokens'] is not None else 'UNKNOWN'}"
         )
-    sys.exit(1 if regressions else 0)
+    sys.exit(1 if regressions or shared_failures or infra_errors else 0)
 
 
 if __name__ == "__main__":
