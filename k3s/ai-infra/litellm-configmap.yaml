@@ -8,21 +8,19 @@ data:
     model_list:
       - model_name: ollama-default
         litellm_params:
-          model: ollama/llama3.1:8b
-          api_base: http://ollama-host:11434
-          extra_headers:
-            Host: "localhost"
+          model: ollama_chat/llama3.1:8b
+          api_base: https://host.orb.internal:19443
+          api_key: os.environ/OLLAMA_GATEWAY_TOKEN
       - model_name: vllm-default
         litellm_params:
           model: openai/Qwen/Qwen3-0.6B
-          api_base: http://vllm-host:8000/v1
-          api_key: "not-needed"
+          api_base: https://host.orb.internal:19444/v1
+          api_key: os.environ/MLX_GATEWAY_TOKEN
       - model_name: gpt-oss-default
         litellm_params:
           model: ollama_chat/gpt-oss:20b
-          api_base: http://ollama-host:11434
-          extra_headers:
-            Host: "localhost"
+          api_base: https://host.orb.internal:19443
+          api_key: os.environ/OLLAMA_GATEWAY_TOKEN
     litellm_settings:
       callbacks: ["prometheus"]
     general_settings:
