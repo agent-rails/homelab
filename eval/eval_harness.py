@@ -199,6 +199,11 @@ def check(case, text, tool_calls, tool_details=None):
     return failures
 
 
+CASE_KEYS = frozenset({
+    "id", "prompt", "tools", "must_contain", "must_call_tool", "must_not_call_tool", "must_call_tool_args",
+})
+
+
 def validate_cases(cases):
     """Reject a malformed suite before spending any inference on it.
 
@@ -219,6 +224,9 @@ def validate_cases(cases):
         if cid in seen:
             problems.append(f"case #{i}: duplicate id {cid!r} — would silently overwrite the earlier case")
         seen.add(cid)
+        unknown = sorted(set(case) - CASE_KEYS)
+        if unknown:
+            problems.append(f"case {cid!r}: unknown key(s) {unknown} — a misspelled assertion would be ignored")
         if not isinstance(case.get("prompt"), str) or not case["prompt"].strip():
             problems.append(f"case {cid!r}: missing or empty 'prompt'")
         if not any(k in case for k in ("must_contain", "must_call_tool", "must_not_call_tool", "must_call_tool_args")):

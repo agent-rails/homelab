@@ -135,6 +135,17 @@ class EvalHarnessMetricsTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     eval_harness.call_model("http://localhost:4000/v1", "fixture", case)
 
+    def test_unknown_case_keys_are_rejected_even_beside_a_valid_assertion(self):
+        tools = [{"type": "function", "function": {"name": "ping", "parameters": {"type": "object"}}}]
+        valid = {"name": "ping", "arguments": {"x": 1}}
+        for typo in ("must_not_call_tools", "must_call_tool_arg", "must_contains"):
+            case = {"id": "c1", "prompt": "Call ping", "tools": tools, "must_call_tool_args": valid, typo: "ping"}
+            with self.subTest(typo=typo):
+                problems = eval_harness.validate_cases([case])
+                self.assertTrue(any("unknown key" in problem and typo in problem for problem in problems), problems)
+        clean = {"id": "c1", "prompt": "Call ping", "tools": tools, "must_call_tool_args": valid}
+        self.assertEqual(eval_harness.validate_cases([clean]), [])
+
     def test_asserted_tool_must_be_offered(self):
         case = {"id": "missing", "prompt": "Call ping", "tools": [],
                 "must_call_tool_args": {"name": "ping", "arguments": {}}}
@@ -200,6 +211,16 @@ class EvalHarnessMetricsTests(unittest.TestCase):
                 result = eval_harness.call_model("http://localhost:4000/v1", "fixture", case)
                 self.assertTrue(eval_harness.check(case, result[0], result[1], result[2]["tool_details"]))
 
+        for raw_number, expected, equal in (("-1.0", 1.0, False), ("1.50", 1.5, True), ("1.5000", 1.5, True)):
+            response.read.return_value = json.dumps({"choices": [{"message": {
+                "tool_calls": [{"type": "function", "function": {"name": "ping", "arguments": '{"x":' + raw_number + '}'}}],
+            }}]}).encode()
+            case = {"prompt": "Call ping", "must_call_tool_args": {"name": "ping", "arguments": {"x": expected}}}
+            with self.subTest(sign_and_trailing_zero=raw_number):
+                result = eval_harness.call_model("http://localhost:4000/v1", "fixture", case)
+                failures = eval_harness.check(case, result[0], result[1], result[2]["tool_details"])
+                self.assertEqual(failures == [], equal)
+
         for raw_number in ("0.00", "0e5", "0.0e-3"):
             response.read.return_value = json.dumps({"choices": [{"message": {
                 "tool_calls": [{"type": "function", "function": {"name": "ping", "arguments": '{"x":' + raw_number + '}'}}],
@@ -246,6 +267,7 @@ class EvalHarnessMetricsTests(unittest.TestCase):
                     "--candidate", "http://candidate/v1", "--candidate-model", "candidate",
                     "--prompts", str(cases_path)]
             for baseline, candidate in (
+                ((True, [], self._metrics()), (False, ["wrong"], self._metrics())),
                 ((False, ["wrong"], self._metrics()), (False, ["wrong"], self._metrics())),
                 ((True, [], self._metrics()), (False, ["request error"], self._metrics(infra=True))),
                 ((False, ["request error"], self._metrics(infra=True)), (True, [], self._metrics())),
