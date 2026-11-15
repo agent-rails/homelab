@@ -120,8 +120,12 @@ so Claude Code can send its own usage metrics without a separate collector. Add 
 "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT": "http://127.0.0.1:9090/api/v1/otlp/v1/metrics",
 "OTEL_EXPORTER_OTLP_METRICS_PROTOCOL": "http/protobuf",
 "OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE": "cumulative",
-"OTEL_METRICS_INCLUDE_ACCOUNT_UUID": "false"
+"OTEL_METRICS_INCLUDE_ACCOUNT_UUID": "false",
+"OTEL_METRIC_EXPORT_INTERVAL": "5000"
 ```
+
+The default export interval is 60 seconds, and a session that ends sooner was not
+exported in testing, so the interval is set to 5 seconds.
 
 Grafana provisions the Prometheus datasource and the "Claude Code usage" dashboard
 (`observability/grafana/dashboards/claude-code-usage.json`): cost, sessions, active
