@@ -2,12 +2,17 @@
 services:
   prometheus:
     image: prom/prometheus:latest
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --web.enable-otlp-receiver # accept OTLP metrics from Claude Code at /api/v1/otlp/v1/metrics
     extra_hosts:
       - "host.docker.internal:host-gateway"     # allow a direct connection from container to the local machine
     ports:
-      - "9090:9090"   # the default port used by Prometheus
+      - "127.0.0.1:9090:9090"   # local only: the OTLP receiver accepts writes without authentication
     volumes:
       - ${PWD}/prometheus.yaml:/etc/prometheus/prometheus.yml # mount Prometheus config file
+      - prometheus-data:/prometheus
     secrets:
       - litellm_metrics_key
       - mlx_gateway_token
@@ -18,7 +23,15 @@ services:
     depends_on:
       - prometheus
     ports:
-      - "3000:3000" # the default port used by Grafana
+      - "127.0.0.1:3000:3000" # local only
+    volumes:
+      - ${PWD}/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ${PWD}/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+
+volumes:
+  prometheus-data:
+  grafana-data:
 
 secrets:
   litellm_metrics_key:

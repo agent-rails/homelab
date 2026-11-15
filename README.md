@@ -111,6 +111,43 @@ probe only; forwarding to 8080 gets a 404 on every real API call.**
 cd observability && docker compose up -d
 ```
 
+Both services listen on `127.0.0.1` only, and their data lives in named volumes, so it
+survives a restart.
+
+### Claude Code usage
+
+Prometheus also accepts OpenTelemetry metrics directly (`--web.enable-otlp-receiver`),
+so Claude Code can send its own usage metrics without a separate collector. Add to the
+`env` block of `~/.claude/settings.json`:
+
+```json
+"CLAUDE_CODE_ENABLE_TELEMETRY": "1",
+"OTEL_METRICS_EXPORTER": "otlp",
+"OTEL_EXPORTER_OTLP_METRICS_ENDPOINT": "http://127.0.0.1:9090/api/v1/otlp/v1/metrics",
+"OTEL_EXPORTER_OTLP_METRICS_PROTOCOL": "http/protobuf",
+"OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE": "cumulative",
+"OTEL_METRICS_INCLUDE_ACCOUNT_UUID": "false",
+"OTEL_METRIC_EXPORT_INTERVAL": "5000"
+```
+
+The default export interval is 60 seconds, and a session that ends sooner was not
+exported in testing, so the interval is set to 5 seconds.
+
+Grafana provisions the Prometheus datasource and the "Claude Code usage" dashboard
+(`observability/grafana/dashboards/claude-code-usage.json`): cost, sessions, active
+time, cache-read share, cost and output tokens by model, tokens by type. Each session
+is its own cumulative counter, so panels sum each session's last value in the range.
+Cost is Claude Code's estimate, not billing.
+
+- Only metrics are exported. Prompt and response logging stay off (their defaults).
+- Claude Code always attaches `user.email` to metrics. The stack is bound to localhost
+  for that reason; do not expose port 9090 or 3000.
+- If the stack is down, Claude Code keeps working and drops the metrics (checked: a
+  session with the endpoint stopped exited 0). The local JSONL logs and the weekly
+  report remain the source of truth.
+
+### Model-serving metrics
+
 Prometheus (`localhost:9090`) scrapes vLLM's `/metrics` through the gateway at
 `https://host.orb.internal:19444`, with the MLX upstream token and gateway CA from
 `~/.config/ai-gateway` mounted as compose secrets, and LiteLLM's `/metrics` via `host.docker.internal:4000`. The LiteLLM target requires
@@ -118,8 +155,9 @@ the proxy port-forward and `LITELLM_METRICS_KEY` in the environment before start
 Compose. The pinned LiteLLM build was verified to reject a normal virtual key on
 `/metrics`; use the master key for this local-only stack and do not persist it in
 the repository. Compose mounts it into Prometheus as a runtime secret. Grafana
-(`localhost:3000`, default `admin`/`admin`)
-needs the Prometheus datasource and dashboard added once per fresh container:
+(`localhost:3000`, default `admin`/`admin`) provisions the Prometheus datasource
+(uid `prometheus`) itself. The vLLM and LiteLLM dashboards still need importing once;
+to add the datasource by hand instead:
 
 ```bash
 curl -s -X POST http://admin:admin@localhost:3000/api/datasources \
