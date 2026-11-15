@@ -2,8 +2,9 @@
 
 Local k3s (OrbStack) cluster running a small agentic stack: Hermes (agent runtime),
 OpenClaw (plugin-based agent gateway), Buzz (Nostr-based team chat relay used as an
-inter-agent channel), vLLM-metal and Ollama (native macOS processes, registered into
-the cluster via ExternalName services), and Open WebUI as a browser front end.
+inter-agent channel), vLLM-metal and Ollama (native macOS processes behind an
+authenticated Caddy gateway), LiteLLM as the single model endpoint, and Open WebUI
+as a browser front end.
 
 This is a learning/reference repo, not a deployable product. It exists to document
 the real integration points and the real bugs hit while wiring these pieces together,
@@ -13,8 +14,7 @@ broader Principal Architect / FDE-track experience with agent orchestration on k
 ## Layout
 
 - `k3s/hermes/` — Hermes deployment manifests (ConfigMap, PVC, Deployment)
-- `k3s/ai-infra/` — ExternalName services registering native-host vLLM/Ollama into
-  cluster DNS, plus Open WebUI helm values
+- `k3s/ai-infra/` — LiteLLM and its Postgres, plus Open WebUI helm values
 - `k3s/buzz/` — Buzz relay helm values (chart: `buzz-0.1.7`)
 - `hermes/` — Hermes agent config example (`config.yaml.example`, `.env.example`)
 - `openclaw/` — OpenClaw's Buzz channel config example, plus
@@ -38,8 +38,9 @@ broader Principal Architect / FDE-track experience with agent orchestration on k
 - `AI_LAB_SECURITY.md` — the enforced-gateway target, cutover acceptance tests,
   evidence classes, and pinned advisory `llm-fit` capture used before manifest
   approval
-- `gateway/` — the pinned, TLS-only Caddy shadow configuration and fail-closed
-  launcher/test path for placing native Ollama and MLX behind LiteLLM
+- `gateway/` — the pinned, TLS-only, loopback-bound Caddy gateway in front of
+  native Ollama and MLX, with its launcher, launchd install, cluster credential
+  sync and shadow test
 
 ## What's NOT here
 
@@ -48,10 +49,10 @@ Real secrets: Buzz nsec keys (`~/.buzz/keys.json`), the Hermes `.env`
 (`~/.openclaw/openclaw.json` `gateway.auth.token`) all stay local. Every file here
 that would normally hold one of those uses a placeholder — see `*.example` files.
 
-LiteLLM is currently the preferred authenticated route, not an enforced network
-boundary: cluster workloads can still address the native backends through the
-ExternalName services. Do not claim gateway enforcement until the acceptance
-tests in `AI_LAB_SECURITY.md` pass.
+The default route of every consumer in this repo reaches the native backends
+through LiteLLM and the authenticated gateway. That is not an isolation boundary: OrbStack forwards host
+loopback to every container and pod and does not enforce NetworkPolicy, so local
+workloads can still call raw Ollama and vLLM. See `AI_LAB_SECURITY.md`.
 
 ## Architecture
 
@@ -59,9 +60,9 @@ tests in `AI_LAB_SECURITY.md` pass.
                      OrbStack k3s cluster
    ┌─────────────────────────────────────────────────────┐
    │  ai-infra ns                                         │
-   │    ollama-host (ExternalName) ──► host.orb.internal   │
-   │    vllm-host   (ExternalName) ──► host.orb.internal   │
-   │    open-webui  (Deployment)  ──► browser UI           │
+   │    open-webui (Deployment) ──► litellm-proxy          │
+   │    litellm-proxy ──► https://host.orb.internal:19443  │
+   │                      https://host.orb.internal:19444  │
    │                                                       │
    │  ai-infra ns                                         │
    │    hermes (Deployment) ──► model: custom/gpt-oss:20b  │
@@ -74,9 +75,10 @@ tests in `AI_LAB_SECURITY.md` pass.
               │ ws://localhost:3939    │ (native macOS processes)
               │ (kubectl port-forward) │
    ┌──────────┴──────────┐   ┌─────────┴─────────┐
-   │ Hermes gateway (CLI)│   │ vllm-metal (MLX)   │
-   │ Buzz identity        │   │ Ollama              │
-   └──────────────────────┘   └─────────────────────┘
+   │ Hermes gateway (CLI)│   │ Caddy gateway       │
+   │ Buzz identity        │   │  ──► Ollama :11434  │
+   └──────────────────────┘   │  ──► vllm-metal :8000│
+                              └─────────────────────┘
               ▲
               │ ws://localhost:3939
    ┌──────────┴──────────┐
@@ -88,11 +90,15 @@ tests in `AI_LAB_SECURITY.md` pass.
 
 ## Bring-up order
 
-1. `k3s/ai-infra/` — ExternalName services, then Open WebUI (`helm install open-webui
-   open-webui/open-webui -n ai-infra -f k3s/ai-infra/open-webui-values.yaml`)
-2. `k3s/buzz/` — relay (`helm install buzz buzz/buzz -n buzz -f k3s/buzz/values.yaml`)
-3. `k3s/hermes/` — agent runtime, once `ai-infra` DNS is resolvable
-4. Hermes CLI + OpenClaw gateway run as native macOS processes, each holding its own
+1. Native gateway: `scripts/install-ai-host-gateway.sh`, then
+   `scripts/sync-ai-gateway-credentials.sh` (see `gateway/README.md`)
+2. `k3s/ai-infra/` — LiteLLM (below), then Open WebUI (`helm install open-webui
+   open-webui/open-webui -n ai-infra -f k3s/ai-infra/open-webui-values.yaml`); Open
+   WebUI needs the `open-webui-openai-keys` Secret holding
+   `<pipelines key>;<open-webui LiteLLM virtual key>` under key `keys`
+3. `k3s/buzz/` — relay (`helm install buzz buzz/buzz -n buzz -f k3s/buzz/values.yaml`)
+4. `k3s/hermes/` — agent runtime, once LiteLLM is up
+5. Hermes CLI + OpenClaw gateway run as native macOS processes, each holding its own
    Buzz identity (see `hermes/.env.example`, `openclaw/buzz-channel-config.example.json`)
 
 `kubectl port-forward -n buzz svc/buzz 3939:3000` exposes the relay to both native
@@ -105,8 +111,9 @@ probe only; forwarding to 8080 gets a 404 on every real API call.**
 cd observability && docker compose up -d
 ```
 
-Prometheus (`localhost:9090`) scrapes vLLM's `/metrics` via `host.docker.internal:8000`
-and LiteLLM's `/metrics` via `host.docker.internal:4000`. The LiteLLM target requires
+Prometheus (`localhost:9090`) scrapes vLLM's `/metrics` through the gateway at
+`https://host.orb.internal:19444`, with the MLX upstream token and gateway CA from
+`~/.config/ai-gateway` mounted as compose secrets, and LiteLLM's `/metrics` via `host.docker.internal:4000`. The LiteLLM target requires
 the proxy port-forward and `LITELLM_METRICS_KEY` in the environment before starting
 Compose. The pinned LiteLLM build was verified to reject a normal virtual key on
 `/metrics`; use the master key for this local-only stack and do not persist it in
@@ -147,7 +154,8 @@ Needs a `litellm-secrets` Secret first (see `k3s/ai-infra/litellm-secret.yaml.ex
 **both** `LITELLM_MASTER_KEY` and `LITELLM_SALT_KEY` must be `openssl rand -base64 32`
 format specifically (not hex) or LiteLLM's own key-cache decryption fails with a
 misleading `No connected db.` error. Single OpenAI-compatible endpoint fronting
-`vllm-host` and `ollama-host`, model aliases `ollama-default`, `vllm-default`,
+the native gateway (`ai-gateway-upstream` Secret and `ai-gateway-ca` ConfigMap
+must exist first), model aliases `ollama-default`, `vllm-default`,
 `gpt-oss-default`.
 
 Hermes routes through it natively (`~/.hermes/config.yaml` `base_url` +
