@@ -1,9 +1,11 @@
 {
 	admin off
 	auto_https disable_redirects
+	skip_install_trust
 }
 
 https://{$AI_GATEWAY_HOST:localhost}:{$OLLAMA_GATEWAY_PORT:19443} {
+	bind 127.0.0.1 [::1]
 	tls internal
 
 	@authorized header Authorization "Bearer {$OLLAMA_GATEWAY_TOKEN}"
@@ -35,6 +37,7 @@ https://{$AI_GATEWAY_HOST:localhost}:{$OLLAMA_GATEWAY_PORT:19443} {
 }
 
 https://{$AI_GATEWAY_HOST:localhost}:{$MLX_GATEWAY_PORT:19444} {
+	bind 127.0.0.1 [::1]
 	tls internal
 
 	@authorized header Authorization "Bearer {$MLX_GATEWAY_TOKEN}"

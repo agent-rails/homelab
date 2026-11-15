@@ -35,10 +35,25 @@ spec:
                 secretKeyRef:
                   name: litellm-secrets
                   key: DATABASE_URL
+            - name: OLLAMA_GATEWAY_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: ai-gateway-upstream
+                  key: OLLAMA_GATEWAY_TOKEN
+            - name: MLX_GATEWAY_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: ai-gateway-upstream
+                  key: MLX_GATEWAY_TOKEN
+            - name: SSL_VERIFY
+              value: /etc/ai-gateway/ca.crt
           volumeMounts:
             - name: config
               mountPath: /app/config.yaml
               subPath: config.yaml
+              readOnly: true
+            - name: ai-gateway-ca
+              mountPath: /etc/ai-gateway
               readOnly: true
           # Phase 2: on first boot against a fresh Postgres, LiteLLM runs Prisma
           # schema migrations before it binds :4000. The old liveness delay (10s)
@@ -79,3 +94,6 @@ spec:
         - name: config
           configMap:
             name: litellm-config
+        - name: ai-gateway-ca
+          configMap:
+            name: ai-gateway-ca

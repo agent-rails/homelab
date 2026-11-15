@@ -1,5 +1,10 @@
 # DESIGN.md — LiteLLM Proxy for Local Model Serving
 
+> Superseded in part: LiteLLM now reaches the native backends through the
+> authenticated gateway in `gateway/`, and the `vllm-host`/`ollama-host`
+> ExternalName services described below are removed. See the enforced gateway
+> cutover entry in `DECISIONS.md`.
+
 ## 1. Executive summary
 
 Every consumer of local models in this stack (Hermes, OpenClaw, the eval harness, ad-hoc load-test scripts) hardcodes raw backend addresses (`localhost:8000` for vLLM, `localhost:11434` for Ollama), both of which are completely unauthenticated. There is no unified interface, no auth boundary, no cross-backend observability (Grafana only sees vLLM), and swapping or adding a backend means editing every consumer individually. The decision is to deploy LiteLLM Proxy, an open-source, self-hosted, OpenAI-compatible gateway, as a k8s Deployment in the `ai-infra` namespace, fronting both backends through the existing `vllm-host`/`ollama-host` ExternalName services and exposed to native-process consumers via `kubectl port-forward`, the same pattern already used for the Buzz relay. The one-sentence why: centralize routing, auth, and observability behind one interface so consumers stop talking to raw, unauthenticated backend ports directly, without adopting infrastructure (llm-d) built for a distributed-GPU problem this single-GPU homelab doesn't have.
