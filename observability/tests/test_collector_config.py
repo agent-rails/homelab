@@ -6,7 +6,7 @@ import yaml
 import conftest
 
 COLLECTOR_DIR = conftest.OBSERVABILITY_DIR / "otel-collector"
-CONFIG_SETS = {"default": ["config.yaml", "empty.yaml"]}
+CONFIG_SETS = {"default": ["config.yaml", "empty.yaml"], "debug": ["config.yaml", "config.debug.yaml"]}
 EXPECTED_EVENTS = {
     "api_request",
     "api_error",
@@ -29,12 +29,32 @@ SANITIZE_CHAIN = {
         "transform/metric_attrs",
         "transform/metric_resource",
     ],
+    "traces": [
+        "memory_limiter",
+        "filter/spans",
+        "transform/traces",
+        "transform/trace_resource",
+    ],
 }
 PUSH_EXPORTER_TYPES = {"otlp", "otlp_http", "otlp_grpc", "otlphttp", "prometheus_remote_write"}
 
 
 def load(name="config.yaml"):
     return yaml.safe_load((COLLECTOR_DIR / name).read_text())
+
+
+def deep_merge(base, extra):
+    merged = dict(base)
+    for key, value in extra.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = deep_merge(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def load_debug():
+    return deep_merge(load(), load("config.debug.yaml"))
 
 
 def component_type(component_id):
@@ -70,8 +90,9 @@ def test_event_allowlist_golden():
 
 
 @pytest.mark.config
-def test_every_pipeline_has_sanitize_chain():
-    config = load()
+@pytest.mark.parametrize("loader", [load, load_debug], ids=["default", "debug"])
+def test_every_pipeline_has_sanitize_chain(loader):
+    config = loader()
     pipelines = config["service"]["pipelines"]
     checked = 0
     for name, pipeline in pipelines.items():
@@ -206,3 +227,64 @@ def test_metric_unit_contract():
         if "sum" in definition:
             assert "unit" not in definition, name
             assert definition["sum"]["value"] == "1" or name == "agent.hook.executions"
+
+
+@pytest.mark.config
+def test_debug_config_adds_only_loki_and_tempo_pipelines():
+    default = load()
+    merged = load_debug()
+    assert set(merged["service"]["pipelines"]) - set(default["service"]["pipelines"]) == {"logs/raw", "traces"}
+    for name in default["service"]["pipelines"]:
+        assert merged["service"]["pipelines"][name] == default["service"]["pipelines"][name]
+    added = set(merged["exporters"]) - set(default["exporters"])
+    assert added == {"otlp_http/loki", "otlp_http/tempo"}
+    assert merged["exporters"]["otlp_http/loki"]["endpoint"].startswith("http://loki:")
+    assert merged["exporters"]["otlp_http/tempo"]["endpoint"].startswith("http://tempo:")
+    for exporter in added:
+        assert merged["exporters"][exporter]["sending_queue"]["queue_size"] > 0
+
+
+@pytest.mark.config
+def test_debug_backends_are_profiled_pinned_and_retention_bounded():
+    compose = yaml.safe_load(conftest.REAL_COMPOSE.read_text())
+    assert compose["services"]["tempo"]["profiles"] == ["traces"]
+    assert compose["services"]["loki"]["profiles"] == ["logs"]
+    for service in ("tempo", "loki"):
+        assert "ports" not in compose["services"][service]
+        assert "@sha256:" in compose["services"][service]["image"]
+    tempo = yaml.safe_load((conftest.OBSERVABILITY_DIR / "tempo" / "config.yaml").read_text())
+    loki = yaml.safe_load((conftest.OBSERVABILITY_DIR / "loki" / "config.yaml").read_text())
+    assert tempo["compactor"]["compaction"]["block_retention"] == "72h"
+    assert loki["limits_config"]["retention_period"] == "168h"
+    assert loki["compactor"]["retention_enabled"] is True
+    command = " ".join(compose["services"]["otel-collector"]["command"])
+    assert "${OTELCOL_DEBUG_CONFIG:-/etc/otelcol/empty.yaml}" in command
+
+
+@pytest.mark.config
+def test_grafana_has_tempo_and_loki_datasources():
+    root = conftest.OBSERVABILITY_DIR / "grafana" / "provisioning" / "datasources"
+    urls = {}
+    for path in root.glob("*.yaml"):
+        for source in yaml.safe_load(path.read_text())["datasources"]:
+            urls[source["uid"]] = source["url"]
+    assert urls["tempo"] == "http://tempo:3200"
+    assert urls["loki"] == "http://loki:3100"
+
+
+@pytest.mark.config
+def test_collector_merge_keeps_default_pipelines_and_adds_debug():
+    command = [
+        "docker", "run", "--rm", "-v", f"{COLLECTOR_DIR}:/cfg:ro", conftest.collector_image(),
+        "print-config", "--config=/cfg/config.yaml", "--config=/cfg/config.debug.yaml",
+    ]
+    result = conftest.subprocess.run(command, capture_output=True, text=True, timeout=120)
+    assert result.returncode == 0, result.stderr
+    printed = yaml.safe_load(result.stdout)
+    default = load()["service"]["pipelines"]
+    pipelines = printed["service"]["pipelines"]
+    assert set(pipelines) == set(default) | {"logs/raw", "traces"}
+    for name, pipeline in default.items():
+        assert pipelines[name]["processors"] == pipeline["processors"]
+        assert pipelines[name]["exporters"] == pipeline["exporters"]
+    assert pipelines["logs/raw"]["processors"] == SANITIZE_CHAIN["logs"] + ["batch/events"]

@@ -29,7 +29,28 @@ services:
     volumes:
       - ${PWD}/otel-collector/config.yaml:/etc/otelcol/config.yaml:ro
       - ${PWD}/otel-collector/empty.yaml:/etc/otelcol/empty.yaml:ro
+      - ${PWD}/otel-collector/config.debug.yaml:/etc/otelcol/config.debug.yaml:ro
     mem_limit: 512m
+    restart: unless-stopped
+
+  tempo:
+    image: grafana/tempo:2.10.10@sha256:12b0820f13ffa10ce956b6e9acc3b03f3cffded99109be6cc09d106fe56e5d38
+    profiles: [traces]
+    command:
+      - -config.file=/etc/tempo/config.yaml
+    volumes:
+      - ${PWD}/tempo/config.yaml:/etc/tempo/config.yaml:ro
+      - tempo-data:/var/tempo
+    restart: unless-stopped
+
+  loki:
+    image: grafana/loki:3.6.20@sha256:be040ec94865dabe4821ce1c0f109452bd4b5acb566ae376672696eb43caedb7
+    profiles: [logs]
+    command:
+      - -config.file=/etc/loki/config.yaml
+    volumes:
+      - ${PWD}/loki/config.yaml:/etc/loki/config.yaml:ro
+      - loki-data:/loki
     restart: unless-stopped
 
   grafana:
@@ -46,6 +67,8 @@ services:
 volumes:
   prometheus-data:
   grafana-data:
+  tempo-data:
+  loki-data:
 
 secrets:
   litellm_metrics_key:

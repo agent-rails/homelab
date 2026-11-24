@@ -190,6 +190,14 @@ class Stack:
                 lambda body: "Server available" in body,
                 READY_TIMEOUT_S,
             )
+        for service, port in (("tempo", 3200), ("loki", 3100)):
+            if service in self.services:
+                poll(
+                    lambda: self.get(self.url(service, port, "/ready")),
+                    lambda body: "ready" in body.lower(),
+                    READY_TIMEOUT_S * 2,
+                    interval=2.0,
+                )
         if "prometheus" in self.services:
             poll(
                 lambda: self.get(self.url("prometheus", 9090, "/-/ready")),
