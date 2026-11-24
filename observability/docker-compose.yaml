@@ -63,6 +63,8 @@ services:
       - ${PWD}/grafana/provisioning:/etc/grafana/provisioning:ro
       - ${PWD}/grafana/dashboards:/var/lib/grafana/dashboards:ro
       - grafana-data:/var/lib/grafana
+    secrets:
+      - slack_webhook_url
 
 volumes:
   prometheus-data:
@@ -77,3 +79,5 @@ secrets:
     file: ${HOME}/.config/ai-gateway/mlx.token
   ai_gateway_ca:
     file: ${HOME}/.config/ai-gateway/data/caddy/pki/authorities/local/root.crt
+  slack_webhook_url:
+    file: ${HOME}/.config/observability/slack-webhook.url

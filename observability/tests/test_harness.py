@@ -40,6 +40,26 @@ def test_test_compose_never_publishes_live_ports_or_secrets():
     assert all(not volume.startswith("prometheus-data") for volume in service["volumes"])
 
 
+@pytest.mark.config
+def test_test_compose_injects_dummy_webhook_not_host_secret():
+    import stat
+
+    import yaml
+
+    real = yaml.safe_load(conftest.REAL_COMPOSE.read_text())
+    assert real["services"]["grafana"]["secrets"] == ["slack_webhook_url"]
+    stack = conftest.Stack(["prometheus", "grafana"], {"prometheus": [9090], "grafana": [3000]})
+    stack.render()
+    document = yaml.safe_load(stack.compose_file.read_text())
+    secret_file = conftest.dummy_secret_path(stack.workdir, "slack_webhook_url")
+    assert document["secrets"] == {"slack_webhook_url": {"file": str(secret_file)}}
+    assert document["services"]["grafana"]["secrets"] == ["slack_webhook_url"]
+    assert "secrets" not in document["services"]["prometheus"]
+    assert stat.S_IMODE(secret_file.stat().st_mode) == 0o600
+    assert secret_file.read_text().startswith("https://hooks.slack.invalid/")
+    assert ".config/observability" not in stack.compose_file.read_text()
+
+
 @pytest.mark.integration
 def test_stack_accepts_otlp_and_query_polls(stack):
     status, body = stack.send_otlp(

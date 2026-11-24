@@ -22,6 +22,7 @@ REAL_PROMETHEUS = OBSERVABILITY_DIR / "prometheus.yaml"
 REQUIRED_DOCKER_CONTEXT = "orbstack"
 READY_TIMEOUT_S = 60
 SELF_CONTAINED_JOBS = ("otel-collector", "prometheus")
+DUMMY_SECRETS = {"slack_webhook_url": "https://hooks.slack.invalid/services/T000/B000/dummy\n"}
 
 
 def assert_docker_context():
@@ -101,11 +102,26 @@ def poll(fetch, accept, timeout, interval=1.0):
         time.sleep(interval)
 
 
+def dummy_secret_path(workdir, name):
+    return workdir / f"{name}.secret"
+
+
+def write_dummy_secrets(workdir):
+    for name, content in DUMMY_SECRETS.items():
+        path = dummy_secret_path(workdir, name)
+        path.touch(mode=0o600, exist_ok=False)
+        path.write_text(content)
+
+
 def build_test_compose(real, services, host_ports, workdir, prometheus_tmpfs_size):
     selected = {}
+    used_secrets = set()
     for name in services:
         service = copy.deepcopy(real["services"][name])
-        service.pop("secrets", None)
+        kept = [secret for secret in service.pop("secrets", []) if secret in DUMMY_SECRETS]
+        if kept:
+            service["secrets"] = kept
+            used_secrets.update(kept)
         service.pop("depends_on", None)
         service.pop("container_name", None)
         service.pop("profiles", None)
@@ -125,7 +141,12 @@ def build_test_compose(real, services, host_ports, workdir, prometheus_tmpfs_siz
         if name == "prometheus":
             service["tmpfs"] = [f"/prometheus:size={prometheus_tmpfs_size},uid=65534,gid=65534"]
         selected[name] = service
-    return {"services": selected}
+    document = {"services": selected}
+    if used_secrets:
+        document["secrets"] = {
+            secret: {"file": str(dummy_secret_path(workdir, secret))} for secret in sorted(used_secrets)
+        }
+    return document
 
 
 def build_test_prometheus(real_path, workdir):
@@ -155,6 +176,7 @@ class Stack:
     def render(self):
         real = yaml.safe_load(REAL_COMPOSE.read_text())
         build_test_prometheus(REAL_PROMETHEUS, self.workdir)
+        write_dummy_secrets(self.workdir)
         document = build_test_compose(
             real, self.services, self.host_ports, self.workdir, self.prometheus_tmpfs_size
         )
