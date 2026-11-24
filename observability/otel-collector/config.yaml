@@ -1,0 +1,178 @@
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+        max_request_body_size: 1048576
+
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 256
+    spike_limit_mib: 64
+
+  filter/events:
+    error_mode: ignore
+    logs:
+      log_record:
+        - 'log.attributes["event.name"] == nil'
+        - 'not IsMatch(String(log.attributes["event.name"]), "^(api_request|api_error|api_retries_exhausted|tool_result|tool_decision|hook_execution_complete)$")'
+
+  transform/error_class:
+    error_mode: ignore
+    log_statements:
+      - context: log
+        statements:
+          - 'delete_key(log.attributes, "error_class")'
+      - context: log
+        conditions:
+          - 'log.attributes["event.name"] == "api_error" or log.attributes["event.name"] == "api_retries_exhausted"'
+        statements:
+          - 'set(log.attributes["error_class"], Concat(["http_", String(log.attributes["status_code"])], "")) where log.attributes["status_code"] != nil and IsMatch(String(log.attributes["status_code"]), "^[1-5][0-9]{2}$")'
+          - 'set(log.attributes["error_class"], "timeout") where log.attributes["error_class"] == nil and log.attributes["error"] != nil and IsMatch(String(log.attributes["error"]), "(?i)timeout|timed out")'
+          - 'set(log.attributes["error_class"], "connection") where log.attributes["error_class"] == nil and log.attributes["error"] != nil and IsMatch(String(log.attributes["error"]), "ECONNRESET|ECONNREFUSED|ENOTFOUND|socket|network")'
+          - 'set(log.attributes["error_class"], "other") where log.attributes["error_class"] == nil'
+      - context: log
+        statements:
+          - 'delete_key(log.attributes, "error")'
+
+  transform/allowlist:
+    error_mode: ignore
+    log_statements:
+      - context: log
+        statements:
+          - 'set(log.attributes["tenant"], "none")'
+          - 'set(log.attributes["tenant"], String(resource.attributes["tenant.id"])) where resource.attributes["tenant.id"] != nil'
+          - 'set(log.attributes["tenant"], "other") where log.attributes["tenant"] != "none" and not IsMatch(log.attributes["tenant"], "^(personal)$")'
+          - 'set(log.attributes["repo"], "none")'
+          - 'set(log.attributes["repo"], String(log.attributes["vcs.repository.name"])) where log.attributes["vcs.repository.name"] != nil'
+          - 'set(log.attributes["repo"], "other") where log.attributes["repo"] != "none" and not IsMatch(log.attributes["repo"], "^(agent-bailiff|agent-guard|agent-warrant|agentic-fabric|homelab|memkit|model-router|provider-router|systems-lab|techbots-dev|voltagebots)$")'
+          - 'set(log.attributes["tool_name"], "mcp_tool") where log.attributes["tool_name"] != nil and IsMatch(String(log.attributes["tool_name"]), "^mcp__")'
+          - 'set(log.attributes["model"], "other") where log.attributes["model"] != nil and not IsMatch(String(log.attributes["model"]), "^[A-Za-z0-9._:/@-]{1,64}$")'
+          - 'set(log.attributes["status_code"], "other") where log.attributes["status_code"] != nil and not IsMatch(String(log.attributes["status_code"]), "^[1-5][0-9]{2}$")'
+          - 'set(log.attributes["tool_name"], "other") where log.attributes["tool_name"] != nil and not IsMatch(String(log.attributes["tool_name"]), "^[A-Za-z0-9_.-]{1,48}$")'
+          - 'set(log.attributes["success"], "other") where log.attributes["success"] != nil and not IsMatch(String(log.attributes["success"]), "^(true|false)$")'
+          - 'set(log.attributes["error_type"], "other") where log.attributes["error_type"] != nil and not IsMatch(String(log.attributes["error_type"]), "^[A-Za-z0-9_:.-]{1,48}$")'
+          - 'set(log.attributes["decision"], "other") where log.attributes["decision"] != nil and not IsMatch(String(log.attributes["decision"]), "^(accept|reject|cancelled)$")'
+          - 'set(log.attributes["source"], "other") where log.attributes["source"] != nil and not IsMatch(String(log.attributes["source"]), "^[a-z_]{1,24}$")'
+          - 'set(log.attributes["classifier_verdict"], "other") where log.attributes["classifier_verdict"] != nil and not IsMatch(String(log.attributes["classifier_verdict"]), "^(allow|block|no_verdict|unavailable)$")'
+          - 'set(log.attributes["hook_event"], "other") where log.attributes["hook_event"] != nil and not IsMatch(String(log.attributes["hook_event"]), "^[A-Za-z]{1,32}$")'
+          - 'set(log.attributes["duration_ms"], "0") where log.attributes["duration_ms"] != nil and not IsMatch(String(log.attributes["duration_ms"]), "^[0-9]{1,9}([.][0-9]+)?$")'
+          - 'set(log.attributes["num_success"], "0") where log.attributes["num_success"] != nil and not IsMatch(String(log.attributes["num_success"]), "^[0-9]{1,6}$")'
+          - 'set(log.attributes["num_blocking"], "0") where log.attributes["num_blocking"] != nil and not IsMatch(String(log.attributes["num_blocking"]), "^[0-9]{1,6}$")'
+          - 'set(log.attributes["num_non_blocking_error"], "0") where log.attributes["num_non_blocking_error"] != nil and not IsMatch(String(log.attributes["num_non_blocking_error"]), "^[0-9]{1,6}$")'
+          - 'set(log.attributes["num_cancelled"], "0") where log.attributes["num_cancelled"] != nil and not IsMatch(String(log.attributes["num_cancelled"]), "^[0-9]{1,6}$")'
+          - 'keep_keys(log.attributes, ["event.name", "model", "error_class", "status_code", "tool_name", "success", "duration_ms", "error_type", "decision", "source", "classifier_verdict", "hook_event", "num_success", "num_blocking", "num_non_blocking_error", "num_cancelled", "tenant", "repo"])'
+          - 'set(log.body, "")'
+
+  transform/resource:
+    error_mode: ignore
+    log_statements:
+      - context: resource
+        statements:
+          - 'keep_keys(resource.attributes, ["service.name"])'
+          - 'set(resource.attributes["service.name"], "other") where resource.attributes["service.name"] != nil and not IsMatch(String(resource.attributes["service.name"]), "^[A-Za-z0-9._-]{1,48}$")'
+
+  batch/events:
+    timeout: 1s
+
+  delta_to_cumulative:
+    max_stale: 1h
+    max_streams: 10000
+
+connectors:
+  signal_to_metrics:
+    error_mode: ignore
+    logs:
+      - name: agent.api.requests
+        conditions:
+          - 'log.attributes["event.name"] == "api_request"'
+        attributes: [{key: model, default_value: unknown}, {key: repo, default_value: unknown}, {key: tenant, default_value: unknown}]
+        sum: {value: '1', monotonic: true}
+      - name: agent.api.errors
+        conditions:
+          - 'log.attributes["event.name"] == "api_error"'
+        attributes: [{key: model, default_value: unknown}, {key: error_class, default_value: unknown}, {key: status_code, default_value: none}, {key: repo, default_value: unknown}, {key: tenant, default_value: unknown}]
+        sum: {value: '1', monotonic: true}
+      - name: agent.api.retries_exhausted
+        conditions:
+          - 'log.attributes["event.name"] == "api_retries_exhausted"'
+        attributes: [{key: model, default_value: unknown}, {key: error_class, default_value: unknown}, {key: repo, default_value: unknown}, {key: tenant, default_value: unknown}]
+        sum: {value: '1', monotonic: true}
+      - name: agent.api.duration
+        conditions:
+          - 'log.attributes["event.name"] == "api_request"'
+        attributes: [{key: model, default_value: unknown}]
+        histogram:
+          value: 'Double(log.attributes["duration_ms"])'
+          buckets: [100, 500, 1000, 5000, 15000, 60000]
+      - name: agent.tool.results
+        conditions:
+          - 'log.attributes["event.name"] == "tool_result"'
+        attributes: [{key: tool_name, default_value: unknown}, {key: success, default_value: unknown}, {key: error_type, default_value: none}, {key: repo, default_value: unknown}, {key: tenant, default_value: unknown}]
+        sum: {value: '1', monotonic: true}
+      - name: agent.tool.duration
+        conditions:
+          - 'log.attributes["event.name"] == "tool_result"'
+        attributes: [{key: tool_name, default_value: unknown}, {key: success, default_value: unknown}]
+        histogram:
+          value: 'Double(log.attributes["duration_ms"])'
+          buckets: [100, 500, 1000, 5000, 15000, 60000]
+      - name: agent.tool.decisions
+        conditions:
+          - 'log.attributes["event.name"] == "tool_decision"'
+        attributes: [{key: decision, default_value: unknown}, {key: source, default_value: unknown}, {key: classifier_verdict, default_value: none}, {key: tool_name, default_value: unknown}, {key: repo, default_value: unknown}, {key: tenant, default_value: unknown}]
+        sum: {value: '1', monotonic: true}
+      - name: agent.hook.executions
+        conditions:
+          - 'log.attributes["event.name"] == "hook_execution_complete"'
+        attributes: [{key: hook_event, default_value: unknown}, {key: repo, default_value: unknown}, {key: tenant, default_value: unknown}, {key: outcome, default_value: success}]
+        sum: {value: 'Int(log.attributes["num_success"])', monotonic: true}
+      - name: agent.hook.executions
+        conditions:
+          - 'log.attributes["event.name"] == "hook_execution_complete"'
+        attributes: [{key: hook_event, default_value: unknown}, {key: repo, default_value: unknown}, {key: tenant, default_value: unknown}, {key: outcome, default_value: blocking}]
+        sum: {value: 'Int(log.attributes["num_blocking"])', monotonic: true}
+      - name: agent.hook.executions
+        conditions:
+          - 'log.attributes["event.name"] == "hook_execution_complete"'
+        attributes: [{key: hook_event, default_value: unknown}, {key: repo, default_value: unknown}, {key: tenant, default_value: unknown}, {key: outcome, default_value: non_blocking_error}]
+        sum: {value: 'Int(log.attributes["num_non_blocking_error"])', monotonic: true}
+      - name: agent.hook.executions
+        conditions:
+          - 'log.attributes["event.name"] == "hook_execution_complete"'
+        attributes: [{key: hook_event, default_value: unknown}, {key: repo, default_value: unknown}, {key: tenant, default_value: unknown}, {key: outcome, default_value: cancelled}]
+        sum: {value: 'Int(log.attributes["num_cancelled"])', monotonic: true}
+
+exporters:
+  prometheus:
+    endpoint: 0.0.0.0:8889
+    metric_expiration: 24h
+    without_scope_info: true
+    resource_to_telemetry_conversion:
+      enabled: false
+
+service:
+  extensions: [health_check]
+  telemetry:
+    metrics:
+      level: detailed
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: 0.0.0.0
+                port: 8888
+  pipelines:
+    logs/events:
+      receivers: [otlp]
+      processors: [memory_limiter, filter/events, transform/error_class, transform/allowlist, transform/resource, batch/events]
+      exporters: [signal_to_metrics]
+    metrics/derived:
+      receivers: [signal_to_metrics]
+      processors: [delta_to_cumulative]
+      exporters: [prometheus]

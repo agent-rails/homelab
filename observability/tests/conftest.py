@@ -70,6 +70,17 @@ def compose_run(args, project=None, compose_file=None, env=None, check=True, tim
     return result
 
 
+def collector_image():
+    compose = yaml.safe_load(REAL_COMPOSE.read_text())
+    return compose["services"]["otel-collector"]["image"]
+
+
+def validate_collector(config_files):
+    command = ["docker", "run", "--rm", "-v", f"{OBSERVABILITY_DIR / 'otel-collector'}:/cfg:ro", collector_image(), "validate"]
+    command += [f"--config=/cfg/{name}" for name in config_files]
+    return subprocess.run(command, capture_output=True, text=True, timeout=120)
+
+
 def poll(fetch, accept, timeout, interval=1.0):
     deadline = time.monotonic() + timeout
     last = None
@@ -168,6 +179,12 @@ class Stack:
             return response.read().decode()
 
     def wait_ready(self):
+        if "otel-collector" in self.services:
+            poll(
+                lambda: self.get(self.url("otel-collector", 13133, "/")),
+                lambda body: "Server available" in body,
+                READY_TIMEOUT_S,
+            )
         if "prometheus" in self.services:
             poll(
                 lambda: self.get(self.url("prometheus", 9090, "/-/ready")),
@@ -188,6 +205,15 @@ class Stack:
             return body["data"]["result"]
 
         return poll(fetch, accept, timeout)
+
+    def series(self, match):
+        query = urllib.parse.urlencode({"match[]": match})
+        body = json.loads(self.get(self.url("prometheus", 9090, f"/api/v1/series?{query}")))
+        assert body["status"] == "success", body
+        return body["data"]
+
+    def scrape(self, service, container_port):
+        return self.get(self.url(service, container_port, "/metrics"))
 
     def query_prom_now(self, expr):
         query = urllib.parse.urlencode({"query": expr})
