@@ -77,6 +77,45 @@ processors:
           - 'keep_keys(resource.attributes, ["service.name"])'
           - 'set(resource.attributes["service.name"], "other") where resource.attributes["service.name"] != nil and not IsMatch(String(resource.attributes["service.name"]), "^[A-Za-z0-9._-]{1,48}$")'
 
+  filter/metrics:
+    error_mode: ignore
+    metrics:
+      metric:
+        - 'not IsMatch(name, "^claude_code[.](session.count|lines_of_code.count|pull_request.count|commit.count|cost.usage|token.usage|code_edit_tool.decision|active_time.total)$")'
+
+  transform/metric_attrs:
+    error_mode: ignore
+    metric_statements:
+      - context: datapoint
+        statements:
+          - 'set(datapoint.attributes["tenant"], "none")'
+          - 'set(datapoint.attributes["tenant"], String(resource.attributes["tenant.id"])) where resource.attributes["tenant.id"] != nil'
+          - 'set(datapoint.attributes["tenant"], "other") where datapoint.attributes["tenant"] != "none" and not IsMatch(datapoint.attributes["tenant"], "^(personal)$")'
+          - 'set(datapoint.attributes["repo"], "none")'
+          - 'set(datapoint.attributes["repo"], String(datapoint.attributes["vcs.repository.name"])) where datapoint.attributes["vcs.repository.name"] != nil'
+          - 'set(datapoint.attributes["repo"], "other") where datapoint.attributes["repo"] != "none" and not IsMatch(datapoint.attributes["repo"], "^(agent-bailiff|agent-guard|agent-warrant|agentic-fabric|homelab|memkit|model-router|provider-router|systems-lab|techbots-dev|voltagebots)$")'
+          - 'set(datapoint.attributes["session.id"], "other") where datapoint.attributes["session.id"] != nil and not IsMatch(String(datapoint.attributes["session.id"]), "^[A-Za-z0-9-]{1,64}$")'
+          - 'set(datapoint.attributes["terminal.type"], "other") where datapoint.attributes["terminal.type"] != nil and not IsMatch(String(datapoint.attributes["terminal.type"]), "^[A-Za-z0-9._-]{1,32}$")'
+          - 'set(datapoint.attributes["type"], "other") where datapoint.attributes["type"] != nil and not IsMatch(String(datapoint.attributes["type"]), "^[A-Za-z]{1,16}$")'
+          - 'set(datapoint.attributes["model"], "other") where datapoint.attributes["model"] != nil and not IsMatch(String(datapoint.attributes["model"]), "^[A-Za-z0-9._:/@-]{1,64}$")'
+          - 'set(datapoint.attributes["tool_name"], "other") where datapoint.attributes["tool_name"] != nil and not IsMatch(String(datapoint.attributes["tool_name"]), "^[A-Za-z0-9_.-]{1,48}$")'
+          - 'set(datapoint.attributes["decision"], "other") where datapoint.attributes["decision"] != nil and not IsMatch(String(datapoint.attributes["decision"]), "^(accept|reject|cancelled)$")'
+          - 'set(datapoint.attributes["source"], "other") where datapoint.attributes["source"] != nil and not IsMatch(String(datapoint.attributes["source"]), "^[a-z_]{1,24}$")'
+          - 'set(datapoint.attributes["language"], "other") where datapoint.attributes["language"] != nil and not IsMatch(String(datapoint.attributes["language"]), "^[A-Za-z0-9+#._ -]{1,32}$")'
+          - 'set(datapoint.attributes["start_type"], "other") where datapoint.attributes["start_type"] != nil and not IsMatch(String(datapoint.attributes["start_type"]), "^(fresh|resume|continue|agents_view)$")'
+          - 'set(datapoint.attributes["query_source"], "other") where datapoint.attributes["query_source"] != nil and not IsMatch(String(datapoint.attributes["query_source"]), "^[a-z_]{1,32}$")'
+          - 'set(datapoint.attributes["speed"], "other") where datapoint.attributes["speed"] != nil and not IsMatch(String(datapoint.attributes["speed"]), "^(fast)$")'
+          - 'set(datapoint.attributes["effort"], "other") where datapoint.attributes["effort"] != nil and not IsMatch(String(datapoint.attributes["effort"]), "^(low|medium|high|xhigh|max)$")'
+          - 'keep_keys(datapoint.attributes, ["session.id", "terminal.type", "type", "model", "tool_name", "decision", "source", "language", "start_type", "query_source", "speed", "effort", "tenant", "repo"])'
+
+  transform/metric_resource:
+    error_mode: ignore
+    metric_statements:
+      - context: resource
+        statements:
+          - 'keep_keys(resource.attributes, ["service.name"])'
+          - 'set(resource.attributes["service.name"], "other") where resource.attributes["service.name"] != nil and not IsMatch(String(resource.attributes["service.name"]), "^[A-Za-z0-9._-]{1,48}$")'
+
   batch/events:
     timeout: 1s
 
@@ -104,6 +143,7 @@ connectors:
         attributes: [{key: model, default_value: unknown}, {key: error_class, default_value: unknown}, {key: repo, default_value: unknown}, {key: tenant, default_value: unknown}]
         sum: {value: '1', monotonic: true}
       - name: agent.api.duration
+        unit: ms
         conditions:
           - 'log.attributes["event.name"] == "api_request"'
         attributes: [{key: model, default_value: unknown}]
@@ -116,6 +156,7 @@ connectors:
         attributes: [{key: tool_name, default_value: unknown}, {key: success, default_value: unknown}, {key: error_type, default_value: none}, {key: repo, default_value: unknown}, {key: tenant, default_value: unknown}]
         sum: {value: '1', monotonic: true}
       - name: agent.tool.duration
+        unit: ms
         conditions:
           - 'log.attributes["event.name"] == "tool_result"'
         attributes: [{key: tool_name, default_value: unknown}, {key: success, default_value: unknown}]
@@ -172,6 +213,10 @@ service:
       receivers: [otlp]
       processors: [memory_limiter, filter/events, transform/error_class, transform/allowlist, transform/resource, batch/events]
       exporters: [signal_to_metrics]
+    metrics/passthrough:
+      receivers: [otlp]
+      processors: [memory_limiter, filter/metrics, transform/metric_attrs, transform/metric_resource, delta_to_cumulative, batch/events]
+      exporters: [prometheus]
     metrics/derived:
       receivers: [signal_to_metrics]
       processors: [delta_to_cumulative]

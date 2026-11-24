@@ -45,7 +45,7 @@ def logs_payload(resource, records):
     }
 
 
-def sum_payload(resource, name, datapoints, temporality, start_ns=None, monotonic=True):
+def sum_payload(resource, name, datapoints, temporality, start_ns=None, monotonic=True, unit=""):
     now = str(time.time_ns())
     start = str(start_ns if start_ns is not None else time.time_ns())
     points = [
@@ -67,6 +67,7 @@ def sum_payload(resource, name, datapoints, temporality, start_ns=None, monotoni
                         "metrics": [
                             {
                                 "name": name,
+                                "unit": unit,
                                 "sum": {
                                     "aggregationTemporality": temporality,
                                     "isMonotonic": monotonic,
@@ -79,6 +80,10 @@ def sum_payload(resource, name, datapoints, temporality, start_ns=None, monotoni
             }
         ]
     }
+
+
+def merge(*payloads):
+    return {"resourceMetrics": [rm for payload in payloads for rm in payload["resourceMetrics"]]}
 
 
 DELTA = 1

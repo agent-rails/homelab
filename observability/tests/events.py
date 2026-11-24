@@ -98,3 +98,68 @@ def api_errors(count, model):
             for _ in range(count)
         ],
     )
+
+
+METRIC_LEAK = {
+    "user.email": f"{SENTINEL}@example.invalid",
+    "user.id": SENTINEL,
+    "user.account_uuid": SENTINEL,
+    "user.account_id": SENTINEL,
+    "organization.id": SENTINEL,
+    "workspace.host_paths": f"/Users/{SENTINEL}",
+    "vcs.repository.url.full": f"https://github.com/{SENTINEL}/private",
+    "custom.secret": SENTINEL,
+    "agent.name": SENTINEL,
+    "skill.name": SENTINEL,
+}
+PASSTHROUGH_METRICS = {
+    "claude_code.session.count": "",
+    "claude_code.lines_of_code.count": "",
+    "claude_code.pull_request.count": "",
+    "claude_code.commit.count": "",
+    "claude_code.cost.usage": "USD",
+    "claude_code.token.usage": "tokens",
+    "claude_code.code_edit_tool.decision": "",
+    "claude_code.active_time.total": "s",
+}
+
+
+def passthrough_forged_batch():
+    resource = {**RESOURCE, "tenant.id": f"Evil Tenant {SENTINEL}"}
+    forged = f"forged!{SENTINEL}"
+    point = {
+        **METRIC_LEAK,
+        "session.id": "forged!session" + SENTINEL,
+        "terminal.type": forged,
+        "type": forged,
+        "model": f"x y {SENTINEL}",
+        "tool_name": forged,
+        "decision": forged,
+        "source": forged,
+        "language": forged,
+        "start_type": forged,
+        "query_source": forged,
+        "speed": forged,
+        "effort": forged,
+        "tenant": forged,
+        "repo": forged,
+        "vcs.repository.name": forged,
+    }
+    batches = [
+        otlp.sum_payload(resource, name, [(point, 1.0)], otlp.CUMULATIVE, unit=unit)
+        for name, unit in PASSTHROUGH_METRICS.items()
+    ]
+    batches.append(otlp.sum_payload(resource, "custom.metric.secret", [(point, 1.0)], otlp.CUMULATIVE))
+    return otlp.merge(*batches)
+
+
+def session_tokens(session_id, value, start_ns, temporality=otlp.CUMULATIVE, name="claude_code.token.usage", unit="tokens", attributes=None):
+    attributes = attributes or {"type": "input", "model": "claude-opus-5-5"}
+    return otlp.sum_payload(
+        {"service.name": "claude-code", "tenant.id": "personal"},
+        name,
+        [({"session.id": session_id, **attributes}, value)],
+        temporality,
+        start_ns=start_ns,
+        unit=unit,
+    )

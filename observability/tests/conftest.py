@@ -49,20 +49,25 @@ def free_ports(count):
             probe.close()
 
 
-def compose_run(args, project=None, compose_file=None, env=None, check=True, timeout=300):
+def compose_run(args, project=None, compose_file=None, env=None, check=True, timeout=120):
     command = ["docker", "compose"]
     if project:
         command += ["-p", project]
     if compose_file:
         command += ["-f", str(compose_file)]
     command += args
-    result = subprocess.run(
+    process = subprocess.Popen(
         command,
-        capture_output=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         text=True,
         env={**os.environ, **(env or {})},
-        timeout=timeout,
     )
+    try:
+        stdout, stderr = process.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(f"docker compose timed out after {timeout}s, pid {process.pid} left running: {' '.join(command)}")
+    result = subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
     if check and result.returncode != 0:
         raise RuntimeError(
             f"{' '.join(command)} failed ({result.returncode})\n{result.stdout}\n{result.stderr}"

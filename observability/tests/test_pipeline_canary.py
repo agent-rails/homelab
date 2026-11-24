@@ -14,15 +14,29 @@ DERIVED = {
     "agent_api_requests_total": {"model", "repo", "tenant"},
     "agent_api_errors_total": {"model", "error_class", "status_code", "repo", "tenant"},
     "agent_api_retries_exhausted_total": {"model", "error_class", "repo", "tenant"},
-    "agent_api_duration_count": {"model"},
-    "agent_api_duration_sum": {"model"},
-    "agent_api_duration_bucket": {"model", "le"},
+    "agent_api_duration_milliseconds_count": {"model"},
+    "agent_api_duration_milliseconds_sum": {"model"},
+    "agent_api_duration_milliseconds_bucket": {"model", "le"},
     "agent_tool_results_total": {"tool_name", "success", "error_type", "repo", "tenant"},
-    "agent_tool_duration_count": {"tool_name", "success"},
-    "agent_tool_duration_sum": {"tool_name", "success"},
-    "agent_tool_duration_bucket": {"tool_name", "success", "le"},
+    "agent_tool_duration_milliseconds_count": {"tool_name", "success"},
+    "agent_tool_duration_milliseconds_sum": {"tool_name", "success"},
+    "agent_tool_duration_milliseconds_bucket": {"tool_name", "success", "le"},
     "agent_tool_decisions_total": {"decision", "source", "classifier_verdict", "tool_name", "repo", "tenant"},
     "agent_hook_executions_total": {"hook_event", "outcome", "repo", "tenant"},
+}
+PASSTHROUGH_NAMES = [
+    "claude_code_session_count_total",
+    "claude_code_lines_of_code_count_total",
+    "claude_code_pull_request_count_total",
+    "claude_code_commit_count_total",
+    "claude_code_cost_usage_USD_total",
+    "claude_code_token_usage_tokens_total",
+    "claude_code_code_edit_tool_decision_total",
+    "claude_code_active_time_seconds_total",
+]
+PASSTHROUGH_LABELS = {
+    "session_id", "terminal_type", "type", "model", "tool_name", "decision", "source",
+    "language", "start_type", "query_source", "speed", "effort", "tenant", "repo",
 }
 SCRAPE_LABELS = {"__name__", "job", "instance", "exported_job"}
 
@@ -130,3 +144,41 @@ def test_error_text_never_stored(gates_on):
     assert "connection" in classes
     assert "error" not in {name for series in gates_on.series('{__name__=~"agent_.*"}') for name in series}
     assert events.SENTINEL.lower() not in gates_on.scrape("otel-collector", 8889).lower()
+
+
+@pytest.fixture(scope="module")
+def passthrough_forged(stack):
+    status, body = stack.send_otlp("otel-collector", 4318, "/v1/metrics", events.passthrough_forged_batch())
+    assert status == 200, body
+    for name in PASSTHROUGH_NAMES:
+        stack.query_prom(name)
+    return stack
+
+
+@pytest.mark.integration
+def test_passthrough_exact_label_set(passthrough_forged):
+    stack = passthrough_forged
+    found = {}
+    for labels in stack.series('{__name__=~"claude_code_.*"}'):
+        found.setdefault(labels["__name__"], []).append(set(labels) - SCRAPE_LABELS - {"__name__"})
+    assert sorted(found) == sorted(PASSTHROUGH_NAMES)
+    for name, label_sets in found.items():
+        for label_set in label_sets:
+            assert label_set <= PASSTHROUGH_LABELS, (name, label_set - PASSTHROUGH_LABELS)
+    assert stack.series('{__name__=~"custom.*"}') == []
+    assert [s for s in stack.series("target_info") if s.get("job") not in ("otel-collector", "prometheus")] == []
+
+
+@pytest.mark.integration
+def test_passthrough_forged_values_become_other_and_sentinel_absent(passthrough_forged):
+    stack = passthrough_forged
+    series = stack.series('{__name__=~"claude_code_.*"}')
+    for label in ("terminal_type", "type", "tool_name", "decision", "source", "language", "start_type", "query_source", "speed", "effort", "tenant", "repo", "model"):
+        values = {s[label] for s in series if label in s}
+        assert values == {"other"}, (label, values)
+    assert {s["session_id"] for s in series} == {"other"}
+    label_names = json.loads(stack.get(stack.url("prometheus", 9090, "/api/v1/labels")))["data"]
+    corpus = [json.dumps(stack.series('{__name__=~".+"}')), stack.scrape("otel-collector", 8889), stack.scrape("otel-collector", 8888)]
+    for label in label_names:
+        corpus.append(stack.get(stack.url("prometheus", 9090, f"/api/v1/label/{label}/values")))
+    assert [i for i, text in enumerate(corpus) if events.SENTINEL.lower() in text.lower()] == []

@@ -23,6 +23,12 @@ SANITIZE_CHAIN = {
         "transform/allowlist",
         "transform/resource",
     ],
+    "metrics": [
+        "memory_limiter",
+        "filter/metrics",
+        "transform/metric_attrs",
+        "transform/metric_resource",
+    ],
 }
 PUSH_EXPORTER_TYPES = {"otlp", "otlp_http", "otlp_grpc", "otlphttp", "prometheus_remote_write"}
 
@@ -153,3 +159,50 @@ def test_collector_published_on_loopback_only_and_prometheus_scrapes_it():
 def test_resource_attributes_reduced_to_service_name():
     statements = load()["processors"]["transform/resource"]["log_statements"][0]["statements"]
     assert statements[0] == 'keep_keys(resource.attributes, ["service.name"])'
+
+
+PASSTHROUGH_METRICS = {
+    "claude_code.session.count",
+    "claude_code.lines_of_code.count",
+    "claude_code.pull_request.count",
+    "claude_code.commit.count",
+    "claude_code.cost.usage",
+    "claude_code.token.usage",
+    "claude_code.code_edit_tool.decision",
+    "claude_code.active_time.total",
+}
+
+
+@pytest.mark.config
+def test_passthrough_metric_allowlist_golden():
+    config = load()
+    conditions = config["processors"]["filter/metrics"]["metrics"]["metric"]
+    assert len(conditions) == 1
+    match = re.fullmatch(r'not IsMatch\(name, "\^claude_code\[\.\]\(([a-z_.|]+)\)\$"\)', conditions[0])
+    assert match
+    assert {"claude_code." + n for n in match.group(1).split("|")} == PASSTHROUGH_METRICS
+    statements = config["processors"]["transform/metric_attrs"]["metric_statements"][0]["statements"]
+    keep = [s for s in statements if s.startswith("keep_keys(datapoint.attributes")]
+    assert len(keep) == 1 and statements[-1] == keep[0]
+    for forbidden in ("user.", "organization", "workspace", "vcs.repository.url", "email"):
+        assert forbidden not in keep[0]
+    assert "session.id" in keep[0]
+    resource = config["processors"]["transform/metric_resource"]["metric_statements"][0]["statements"]
+    assert resource[0] == 'keep_keys(resource.attributes, ["service.name"])'
+
+
+@pytest.mark.config
+def test_prometheus_otlp_receiver_still_enabled_in_this_phase():
+    compose = yaml.safe_load(conftest.REAL_COMPOSE.read_text())
+    assert "--web.enable-otlp-receiver" in compose["services"]["prometheus"]["command"]
+
+
+@pytest.mark.config
+def test_metric_unit_contract():
+    definitions = {d["name"]: d for d in load()["connectors"]["signal_to_metrics"]["logs"]}
+    for name in ("agent.api.duration", "agent.tool.duration"):
+        assert definitions[name]["unit"] == "ms"
+    for name, definition in definitions.items():
+        if "sum" in definition:
+            assert "unit" not in definition, name
+            assert definition["sum"]["value"] == "1" or name == "agent.hook.executions"
