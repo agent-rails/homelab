@@ -29,3 +29,8 @@ scrape_configs:
       - targets:
           - 'otel-collector:8889'
           - 'otel-collector:8888'
+
+  - job_name: prometheus
+    static_configs:
+      - targets:
+          - 'localhost:9090'
