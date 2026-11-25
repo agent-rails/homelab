@@ -14,6 +14,14 @@ STACK = {
 }
 
 
+LINK = {
+    "traceId": "0af7651916cd43dd8448eb211c80319c",
+    "spanId": "b7ad6b7169203331",
+    "traceState": f"k={events.SENTINEL}",
+    "attributes": otlp.attrs({"secret": events.SENTINEL}),
+}
+
+
 def span_batch():
     resource = {**events.RESOURCE}
     leak = {
@@ -28,13 +36,29 @@ def span_batch():
         [
             ("claude_code.tool", leak, {"secret": events.SENTINEL, "message": events.SENTINEL}),
             ("claude_code.user_prompt_dump", leak, {"secret": events.SENTINEL}),
+            ("claude_code.hook", {"hook_event": "Stop"}, {}, [LINK]),
         ],
+        scope=sentinel_scope(),
+    )
+
+
+def sentinel_scope():
+    return {"name": events.SENTINEL, "version": events.SENTINEL, "attributes": otlp.attrs({"secret": events.SENTINEL})}
+
+
+def scoped_log_batch():
+    return otlp.logs_payload(
+        {"service.name": "claude-code", "tenant.id": "personal"},
+        [{"event.name": "api_request", "model": "claude-haiku-4-1", "duration_ms": 1, "_severity": events.SENTINEL}],
+        scope=sentinel_scope(),
     )
 
 
 @pytest.fixture(scope="module")
 def sent(stack):
     status, body = stack.send_otlp("otel-collector", 4318, "/v1/logs", events.gates_on_batch())
+    assert status == 200, body
+    status, body = stack.send_otlp("otel-collector", 4318, "/v1/logs", scoped_log_batch())
     assert status == 200, body
     status, body = stack.send_otlp("otel-collector", 4318, "/v1/traces", span_batch())
     assert status == 200, body
@@ -54,7 +78,7 @@ def tempo_traces(stack):
 
 @pytest.mark.integration
 def test_loki_receives_sanitized_events_only(sent):
-    wanted = ("api_request", "api_error", "api_retries_exhausted", "tool_result", "tool_decision", "hook_execution_complete")
+    wanted = ("api_request", "api_error", "api_retries_exhausted", "tool_result", "tool_decision", "hook_execution_complete", "claude-haiku-4-1")
     result = conftest.poll(
         lambda: loki_entries(sent),
         lambda rows: all(name in json.dumps(rows) for name in wanted),
@@ -76,7 +100,9 @@ def test_tempo_receives_sanitized_spans_only(sent):
     assert events.SENTINEL.lower() not in raw.lower()
     assert "claude_code.tool" in raw
     assert "user_prompt_dump" not in raw
+    assert "claude_code.hook" not in raw
     assert "secret-event" not in raw
+    assert "0af7651916cd43dd8448eb211c80319c" not in raw.lower() and "CvdlGRbNQ92ESOshHIAxnA==" not in raw
 
 
 @pytest.mark.integration

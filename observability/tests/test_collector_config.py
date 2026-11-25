@@ -199,9 +199,11 @@ def test_passthrough_metric_allowlist_golden():
     config = load()
     conditions = config["processors"]["filter/metrics"]["metrics"]["metric"]
     assert len(conditions) == 1
-    match = re.fullmatch(r'not IsMatch\(name, "\^claude_code\[\.\]\(([a-z_.|]+)\)\$"\)', conditions[0])
+    match = re.fullmatch(r'not IsMatch\(name, "\^claude_code\[\.\]\(([a-z_|\[\].]+)\)\$"\)', conditions[0])
     assert match
-    assert {"claude_code." + n for n in match.group(1).split("|")} == PASSTHROUGH_METRICS
+    assert re.search(r'(?<!\[)\.|\.(?!\])', match.group(1)) is None
+    names = match.group(1).replace("[.]", ".").split("|")
+    assert {"claude_code." + n for n in names} == PASSTHROUGH_METRICS
     statements = config["processors"]["transform/metric_attrs"]["metric_statements"][0]["statements"]
     keep = [s for s in statements if s.startswith("keep_keys(datapoint.attributes")]
     assert len(keep) == 1 and statements[-1] == keep[0]
@@ -288,3 +290,86 @@ def test_collector_merge_keeps_default_pipelines_and_adds_debug():
         assert pipelines[name]["processors"] == pipeline["processors"]
         assert pipelines[name]["exporters"] == pipeline["exporters"]
     assert pipelines["logs/raw"]["processors"] == SANITIZE_CHAIN["logs"] + ["batch/events"]
+
+
+@pytest.mark.config
+def test_passthrough_metric_description_cleared_and_unit_pinned():
+    groups = load()["processors"]["transform/metric_attrs"]["metric_statements"]
+    metric = [g for g in groups if g["context"] == "metric"]
+    assert len(metric) == 1
+    statements = metric[0]["statements"]
+    assert statements[:2] == ['set(metric.description, "")', 'set(metric.unit, "")']
+    pinned = {
+        re.fullmatch(r'set\(metric\.unit, "(\w+)"\) where metric\.name == "([a-z_.]+)"', s).groups()
+        for s in statements[2:]
+    }
+    assert pinned == {
+        ("USD", "claude_code.cost.usage"),
+        ("tokens", "claude_code.token.usage"),
+        ("s", "claude_code.active_time.total"),
+    }
+
+
+@pytest.mark.config
+def test_sanitize_processors_fail_closed():
+    config = load_debug()
+    sanitizers = [p for p in config["processors"] if component_type(p) in ("filter", "transform")]
+    assert len(sanitizers) == 10
+    for name in sanitizers:
+        assert config["processors"][name]["error_mode"] == "propagate", name
+
+
+def enumerated(statements, key):
+    pattern = r'set\(\w+\.attributes\["%s"\], "other"\) where .* "\^\(([^"]+)\)\$"\)\)?' % re.escape(key)
+    matches = [re.fullmatch(pattern, s) for s in statements]
+    found = [m.group(1) for m in matches if m]
+    assert len(found) == 1, key
+    return found[0]
+
+
+@pytest.mark.config
+def test_low_cardinality_labels_are_enumerated():
+    log = load()["processors"]["transform/allowlist"]["log_statements"][0]["statements"]
+    datapoint = load()["processors"]["transform/metric_attrs"]["metric_statements"][0]["statements"]
+    sources = "config|hook|user_permanent|user_temporary|user_abort|user_reject"
+    assert enumerated(log, "source") == sources
+    assert enumerated(datapoint, "source") == sources
+    assert len(enumerated(log, "hook_event").split("|")) == 33
+    assert enumerated(log, "error_type") == "Error|ShellError|Error:(ENOENT|EACCES|EPERM|EISDIR|ENOTDIR|EEXIST|ENOTEMPTY|ETIMEDOUT)"
+    assert enumerated(datapoint, "type") == "added|removed|input|output|cacheRead|cacheCreation|user|cli"
+    assert enumerated(datapoint, "query_source") == "main|subagent|auxiliary|plugin_model_complete|plugin_model_classify"
+
+
+@pytest.mark.config
+def test_free_text_labels_require_string_values():
+    log = load()["processors"]["transform/allowlist"]["log_statements"][0]["statements"]
+    datapoint = load()["processors"]["transform/metric_attrs"]["metric_statements"][0]["statements"]
+    traces = load_debug()["processors"]["transform/traces"]["trace_statements"][0]["statements"]
+    checks = [(log, "log", k) for k in ("model", "tool_name")]
+    checks += [(traces, "span", k) for k in ("model", "tool_name")]
+    checks += [(datapoint, "datapoint", k) for k in ("session.id", "terminal.type", "model", "tool_name", "language")]
+    for statements, context, key in checks:
+        guard = f'not IsString({context}.attributes["{key}"]) or not IsMatch({context}.attributes["{key}"], '
+        assert any(s.startswith(f'set({context}.attributes["{key}"], "other")') and guard in s for s in statements), key
+
+
+@pytest.mark.config
+def test_hook_counts_default_to_zero_and_bad_duration_dropped():
+    log = load()["processors"]["transform/allowlist"]["log_statements"][0]["statements"]
+    for key in ("num_success", "num_blocking", "num_non_blocking_error", "num_cancelled"):
+        assert any(s.startswith(f'set(log.attributes["{key}"], "0") where log.attributes["{key}"] == nil or ') for s in log), key
+    assert any(s.startswith('delete_key(log.attributes, "duration_ms") where ') for s in log)
+    definitions = {d["name"]: d for d in load()["connectors"]["signal_to_metrics"]["logs"]}
+    for name in ("agent.api.duration", "agent.tool.duration"):
+        assert len(definitions[name]["conditions"]) == 1
+        assert definitions[name]["conditions"][0].endswith(' and log.attributes["duration_ms"] != nil'), name
+
+
+@pytest.mark.config
+def test_debug_traces_drop_links_and_scope_metadata():
+    groups = {g["context"]: g["statements"] for g in load_debug()["processors"]["transform/traces"]["trace_statements"]}
+    assert not any("links" in s for s in groups["span"])
+    assert "Len(span.links) > 0" in load_debug()["processors"]["filter/spans"]["traces"]["span"]
+    assert groups["scope"] == ['keep_keys(scope.attributes, [])', 'set(scope.name, "claude_code")', 'set(scope.version, "")']
+    logs = {g["context"]: g["statements"] for g in load()["processors"]["transform/resource"]["log_statements"]}
+    assert logs["scope"] == groups["scope"]

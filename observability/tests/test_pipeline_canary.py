@@ -126,15 +126,15 @@ def test_forged_values_become_other(forged):
 @pytest.mark.integration
 def test_tenant_on_every_record(stack):
     status, body = stack.send_otlp(
-        "otel-collector", 4318, "/v1/logs", events.api_requests(3, "tenant-check")
+        "otel-collector", 4318, "/v1/logs", events.api_requests(3, "claude-haiku-2-1")
     )
     assert status == 200, body
     result = stack.query_prom(
-        'sum(agent_api_requests_total{model="tenant-check",tenant="personal"})',
+        'sum(agent_api_requests_total{model="claude-haiku-2-1",tenant="personal"})',
         until=lambda rows: rows and rows[0]["value"][1] == "3",
     )
     assert result[0]["value"][1] == "3"
-    assert stack.query_prom_now('agent_api_requests_total{model="tenant-check",tenant!="personal"}') == []
+    assert stack.query_prom_now('agent_api_requests_total{model="claude-haiku-2-1",tenant!="personal"}') == []
 
 
 @pytest.mark.integration
