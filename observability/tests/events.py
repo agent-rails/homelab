@@ -273,3 +273,52 @@ def forged_metric_types():
     ]
     resource = {"attributes": otlp.attrs({"service.name": "claude-code", "tenant.id": "personal"})}
     return {"resourceMetrics": [{"resource": resource, "scopeMetrics": [{"scope": {"name": "x"}, "metrics": metrics}]}]}
+
+
+NAN = {"doubleValue": "NaN"}
+INF = {"doubleValue": "Infinity"}
+NEG_INF = {"doubleValue": "-Infinity"}
+
+
+def non_finite_logs():
+    repo = {"vcs.repository.name": "provider-router"}
+    claude = {"service.name": "claude-code", "tenant.id": "personal"}
+    main = otlp.logs_payload(
+        claude,
+        [
+            {"event.name": "api_request", "model": "claude-sonnet-5-4", "duration_ms": 10, **repo},
+            {"event.name": "api_request", "model": "claude-sonnet-5-4", "duration_ms": NAN, **repo},
+            {"event.name": "api_request", "model": "claude-opus-4-1-20250805", **repo},
+            {"event.name": "api_error", "model": "claude-sonnet-5-4", "status_code": NAN, "error": INF, **repo},
+            {"event.name": "tool_result", "tool_name": "Bash", "success": NAN, "error_type": INF, "duration_ms": NEG_INF, **repo},
+            {"event.name": "tool_decision", "tool_name": "Bash", "decision": NAN, "source": INF, "classifier_verdict": NEG_INF, **repo},
+            {"event.name": "hook_execution_complete", "hook_event": NAN, "num_success": 1, "num_blocking": INF, "num_non_blocking_error": NAN, "num_cancelled": NEG_INF, **repo},
+            {"event.name": "api_request", "model": "claude-sonnet-5-4", "vcs.repository.name": NAN},
+            {"event.name": NAN, "model": "claude-sonnet-5-4", **repo},
+        ],
+    )
+    forged_tenant = otlp.logs_payload(
+        {"service.name": "evil-svc-1234", "tenant.id": NAN},
+        [{"event.name": "api_request", "model": "claude-sonnet-5-4", "vcs.repository.name": "memkit"}],
+    )
+    forged_service = otlp.logs_payload(
+        {"service.name": INF, "tenant.id": "personal"},
+        [{"event.name": "api_request", "model": "claude-sonnet-5-4", "vcs.repository.name": "model-router"}],
+    )
+    return {"resourceLogs": main["resourceLogs"] + forged_tenant["resourceLogs"] + forged_service["resourceLogs"]}
+
+
+def non_finite_metrics():
+    resource = {"service.name": "claude-code", "tenant.id": NAN}
+    session = "0e000000-0000-4000-8000-0000000000%02d"
+    return otlp.sum_payload(
+        resource,
+        "claude_code.cost.usage",
+        [
+            ({"session.id": session % 1, "model": "claude-sonnet-5-4", "type": NAN, "speed": INF}, 2.0),
+            ({"session.id": session % 2, "model": "claude-sonnet-5-4"}, "NaN"),
+            ({"session.id": session % 3, "model": "claude-sonnet-5-4"}, "Infinity"),
+            ({"session.id": session % 4, "model": "claude-sonnet-5-4"}, "-Infinity"),
+        ],
+        otlp.CUMULATIVE,
+    )

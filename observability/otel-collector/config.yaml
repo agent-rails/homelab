@@ -20,6 +20,7 @@ processors:
     logs:
       log_record:
         - 'log.attributes["event.name"] == nil'
+        - 'IsDouble(log.attributes["event.name"])'
         - 'not IsMatch(String(log.attributes["event.name"]), "^(api_request|api_error|api_retries_exhausted|tool_result|tool_decision|hook_execution_complete)$")'
 
   transform/error_class:
@@ -28,6 +29,21 @@ processors:
       - context: log
         statements:
           - 'delete_key(log.attributes, "error_class")'
+          - 'set(log.attributes["status_code"], "other") where IsDouble(log.attributes["status_code"]) and not (log.attributes["status_code"] > -1.0e308 and log.attributes["status_code"] < 1.0e308)'
+          - 'set(log.attributes["error"], "other") where IsDouble(log.attributes["error"]) and not (log.attributes["error"] > -1.0e308 and log.attributes["error"] < 1.0e308)'
+          - 'set(log.attributes["success"], "other") where IsDouble(log.attributes["success"]) and not (log.attributes["success"] > -1.0e308 and log.attributes["success"] < 1.0e308)'
+          - 'set(log.attributes["error_type"], "other") where IsDouble(log.attributes["error_type"]) and not (log.attributes["error_type"] > -1.0e308 and log.attributes["error_type"] < 1.0e308)'
+          - 'set(log.attributes["decision"], "other") where IsDouble(log.attributes["decision"]) and not (log.attributes["decision"] > -1.0e308 and log.attributes["decision"] < 1.0e308)'
+          - 'set(log.attributes["source"], "other") where IsDouble(log.attributes["source"]) and not (log.attributes["source"] > -1.0e308 and log.attributes["source"] < 1.0e308)'
+          - 'set(log.attributes["classifier_verdict"], "other") where IsDouble(log.attributes["classifier_verdict"]) and not (log.attributes["classifier_verdict"] > -1.0e308 and log.attributes["classifier_verdict"] < 1.0e308)'
+          - 'set(log.attributes["hook_event"], "other") where IsDouble(log.attributes["hook_event"]) and not (log.attributes["hook_event"] > -1.0e308 and log.attributes["hook_event"] < 1.0e308)'
+          - 'set(log.attributes["duration_ms"], "other") where IsDouble(log.attributes["duration_ms"]) and not (log.attributes["duration_ms"] > -1.0e308 and log.attributes["duration_ms"] < 1.0e308)'
+          - 'set(log.attributes["num_success"], "other") where IsDouble(log.attributes["num_success"]) and not (log.attributes["num_success"] > -1.0e308 and log.attributes["num_success"] < 1.0e308)'
+          - 'set(log.attributes["num_blocking"], "other") where IsDouble(log.attributes["num_blocking"]) and not (log.attributes["num_blocking"] > -1.0e308 and log.attributes["num_blocking"] < 1.0e308)'
+          - 'set(log.attributes["num_non_blocking_error"], "other") where IsDouble(log.attributes["num_non_blocking_error"]) and not (log.attributes["num_non_blocking_error"] > -1.0e308 and log.attributes["num_non_blocking_error"] < 1.0e308)'
+          - 'set(log.attributes["num_cancelled"], "other") where IsDouble(log.attributes["num_cancelled"]) and not (log.attributes["num_cancelled"] > -1.0e308 and log.attributes["num_cancelled"] < 1.0e308)'
+          - 'set(log.attributes["vcs.repository.name"], "other") where IsDouble(log.attributes["vcs.repository.name"]) and not (log.attributes["vcs.repository.name"] > -1.0e308 and log.attributes["vcs.repository.name"] < 1.0e308)'
+          - 'set(resource.attributes["tenant.id"], "other") where IsDouble(resource.attributes["tenant.id"]) and not (resource.attributes["tenant.id"] > -1.0e308 and resource.attributes["tenant.id"] < 1.0e308)'
       - context: log
         conditions:
           - 'log.attributes["event.name"] == "api_error" or log.attributes["event.name"] == "api_retries_exhausted"'
@@ -52,7 +68,7 @@ processors:
           - 'set(log.attributes["repo"], String(log.attributes["vcs.repository.name"])) where log.attributes["vcs.repository.name"] != nil'
           - 'set(log.attributes["repo"], "other") where log.attributes["repo"] != "none" and not IsMatch(log.attributes["repo"], "^(agent-bailiff|agent-guard|agent-warrant|agentic-fabric|homelab|memkit|model-router|provider-router|systems-lab|techbots-dev|voltagebots)$")'
           - 'set(log.attributes["tool_name"], "mcp_tool") where log.attributes["tool_name"] != nil and IsString(log.attributes["tool_name"]) and IsMatch(log.attributes["tool_name"], "^mcp__")'
-          - 'set(log.attributes["model"], "other") where log.attributes["model"] != nil and (not IsString(log.attributes["model"]) or not IsMatch(log.attributes["model"], "^claude-(fable|opus|sonnet|haiku)-[0-9]{1,2}(-[0-9]{1,2})?$"))'
+          - 'set(log.attributes["model"], "other") where log.attributes["model"] != nil and (not IsString(log.attributes["model"]) or not IsMatch(log.attributes["model"], "^claude-(fable|opus|sonnet|haiku)-[0-9]{1,2}(-[0-9]{1,2})?(-[0-9]{8})?$"))'
           - 'set(log.attributes["status_code"], "other") where log.attributes["status_code"] != nil and not IsMatch(String(log.attributes["status_code"]), "^[1-5][0-9]{2}$")'
           - 'set(log.attributes["tool_name"], "other") where log.attributes["tool_name"] != nil and (not IsString(log.attributes["tool_name"]) or not IsMatch(log.attributes["tool_name"], "^[A-Za-z0-9_.-]{1,48}$"))'
           - 'set(log.attributes["success"], "other") where log.attributes["success"] != nil and not IsMatch(String(log.attributes["success"]), "^(true|false)$")'
@@ -83,6 +99,7 @@ processors:
           - 'keep_keys(log.attributes, ["event.name", "model", "error_class", "status_code", "tool_name", "success", "duration_ms", "error_type", "decision", "source", "classifier_verdict", "hook_event", "num_success", "num_blocking", "num_non_blocking_error", "num_cancelled", "tenant", "repo"])'
           - 'set(log.body, "")'
           - 'set(log.severity_text, "")'
+          - 'set(log.severity_number, 0)'
           - 'set(log.event_name, "")'
 
   transform/resource:
@@ -91,7 +108,7 @@ processors:
       - context: resource
         statements:
           - 'keep_keys(resource.attributes, ["service.name"])'
-          - 'set(resource.attributes["service.name"], "other") where resource.attributes["service.name"] != nil and not IsMatch(String(resource.attributes["service.name"]), "^[A-Za-z0-9._-]{1,48}$")'
+          - 'set(resource.attributes["service.name"], "other") where resource.attributes["service.name"] == nil or not IsString(resource.attributes["service.name"]) or not IsMatch(resource.attributes["service.name"], "^(claude-code)$")'
       - context: scope
         statements:
           - 'keep_keys(scope.attributes, [])'
@@ -105,12 +122,23 @@ processors:
         - 'type != METRIC_DATA_TYPE_SUM'
         - 'type == METRIC_DATA_TYPE_SUM and is_monotonic == false'
         - 'not IsMatch(name, "^claude_code[.](session[.]count|lines_of_code[.]count|pull_request[.]count|commit[.]count|cost[.]usage|token[.]usage|code_edit_tool[.]decision|active_time[.]total)$")'
+      datapoint:
+        - 'not (datapoint.value_double > -1.0e308 and datapoint.value_double < 1.0e308)'
 
   transform/metric_attrs:
     error_mode: propagate
     metric_statements:
       - context: datapoint
         statements:
+          - 'set(datapoint.attributes["type"], "other") where IsDouble(datapoint.attributes["type"]) and not (datapoint.attributes["type"] > -1.0e308 and datapoint.attributes["type"] < 1.0e308)'
+          - 'set(datapoint.attributes["decision"], "other") where IsDouble(datapoint.attributes["decision"]) and not (datapoint.attributes["decision"] > -1.0e308 and datapoint.attributes["decision"] < 1.0e308)'
+          - 'set(datapoint.attributes["source"], "other") where IsDouble(datapoint.attributes["source"]) and not (datapoint.attributes["source"] > -1.0e308 and datapoint.attributes["source"] < 1.0e308)'
+          - 'set(datapoint.attributes["start_type"], "other") where IsDouble(datapoint.attributes["start_type"]) and not (datapoint.attributes["start_type"] > -1.0e308 and datapoint.attributes["start_type"] < 1.0e308)'
+          - 'set(datapoint.attributes["query_source"], "other") where IsDouble(datapoint.attributes["query_source"]) and not (datapoint.attributes["query_source"] > -1.0e308 and datapoint.attributes["query_source"] < 1.0e308)'
+          - 'set(datapoint.attributes["speed"], "other") where IsDouble(datapoint.attributes["speed"]) and not (datapoint.attributes["speed"] > -1.0e308 and datapoint.attributes["speed"] < 1.0e308)'
+          - 'set(datapoint.attributes["effort"], "other") where IsDouble(datapoint.attributes["effort"]) and not (datapoint.attributes["effort"] > -1.0e308 and datapoint.attributes["effort"] < 1.0e308)'
+          - 'set(datapoint.attributes["vcs.repository.name"], "other") where IsDouble(datapoint.attributes["vcs.repository.name"]) and not (datapoint.attributes["vcs.repository.name"] > -1.0e308 and datapoint.attributes["vcs.repository.name"] < 1.0e308)'
+          - 'set(resource.attributes["tenant.id"], "other") where IsDouble(resource.attributes["tenant.id"]) and not (resource.attributes["tenant.id"] > -1.0e308 and resource.attributes["tenant.id"] < 1.0e308)'
           - 'set(datapoint.attributes["tenant"], "none")'
           - 'set(datapoint.attributes["tenant"], String(resource.attributes["tenant.id"])) where resource.attributes["tenant.id"] != nil'
           - 'set(datapoint.attributes["tenant"], "other") where datapoint.attributes["tenant"] != "none" and not IsMatch(datapoint.attributes["tenant"], "^(personal)$")'
@@ -120,7 +148,7 @@ processors:
           - 'set(datapoint.attributes["session.id"], "other") where datapoint.attributes["session.id"] != nil and (not IsString(datapoint.attributes["session.id"]) or not IsMatch(datapoint.attributes["session.id"], "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"))'
           - 'set(datapoint.attributes["terminal.type"], "other") where datapoint.attributes["terminal.type"] != nil and (not IsString(datapoint.attributes["terminal.type"]) or not IsMatch(datapoint.attributes["terminal.type"], "^[A-Za-z0-9._-]{1,32}$"))'
           - 'set(datapoint.attributes["type"], "other") where datapoint.attributes["type"] != nil and not IsMatch(String(datapoint.attributes["type"]), "^(added|removed|input|output|cacheRead|cacheCreation|user|cli)$")'
-          - 'set(datapoint.attributes["model"], "other") where datapoint.attributes["model"] != nil and (not IsString(datapoint.attributes["model"]) or not IsMatch(datapoint.attributes["model"], "^claude-(fable|opus|sonnet|haiku)-[0-9]{1,2}(-[0-9]{1,2})?$"))'
+          - 'set(datapoint.attributes["model"], "other") where datapoint.attributes["model"] != nil and (not IsString(datapoint.attributes["model"]) or not IsMatch(datapoint.attributes["model"], "^claude-(fable|opus|sonnet|haiku)-[0-9]{1,2}(-[0-9]{1,2})?(-[0-9]{8})?$"))'
           - 'set(datapoint.attributes["tool_name"], "other") where datapoint.attributes["tool_name"] != nil and (not IsString(datapoint.attributes["tool_name"]) or not IsMatch(datapoint.attributes["tool_name"], "^[A-Za-z0-9_.-]{1,48}$"))'
           - 'set(datapoint.attributes["decision"], "other") where datapoint.attributes["decision"] != nil and not IsMatch(String(datapoint.attributes["decision"]), "^(accept|reject|cancelled)$")'
           - 'set(datapoint.attributes["source"], "other") where datapoint.attributes["source"] != nil and not IsMatch(String(datapoint.attributes["source"]), "^(config|hook|user_permanent|user_temporary|user_abort|user_reject)$")'
@@ -156,7 +184,7 @@ processors:
       - context: resource
         statements:
           - 'keep_keys(resource.attributes, ["service.name"])'
-          - 'set(resource.attributes["service.name"], "other") where resource.attributes["service.name"] != nil and not IsMatch(String(resource.attributes["service.name"]), "^[A-Za-z0-9._-]{1,48}$")'
+          - 'set(resource.attributes["service.name"], "other") where resource.attributes["service.name"] == nil or not IsString(resource.attributes["service.name"]) or not IsMatch(resource.attributes["service.name"], "^(claude-code)$")'
 
   batch/events:
     timeout: 1s

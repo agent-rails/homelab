@@ -79,14 +79,14 @@ def test_no_deprecation_warnings(validation):
 @pytest.mark.config
 def test_event_allowlist_golden():
     conditions = load()["processors"]["filter/events"]["logs"]["log_record"]
-    assert conditions[0] == 'log.attributes["event.name"] == nil'
+    assert conditions[:2] == ['log.attributes["event.name"] == nil', 'IsDouble(log.attributes["event.name"])']
     match = re.fullmatch(
         r'not IsMatch\(String\(log\.attributes\["event\.name"\]\), "\^\(([a-z_|]+)\)\$"\)',
-        conditions[1],
+        conditions[2],
     )
     assert match
     assert set(match.group(1).split("|")) == EXPECTED_EVENTS
-    assert len(conditions) == 2
+    assert len(conditions) == 3
 
 
 @pytest.mark.config
@@ -200,6 +200,8 @@ def test_passthrough_metric_allowlist_golden():
     conditions = config["processors"]["filter/metrics"]["metrics"]["metric"]
     assert conditions[:2] == ["type != METRIC_DATA_TYPE_SUM", "type == METRIC_DATA_TYPE_SUM and is_monotonic == false"]
     assert len(conditions) == 3
+    datapoint = config["processors"]["filter/metrics"]["metrics"]["datapoint"]
+    assert datapoint == ["not (datapoint.value_double > -1.0e308 and datapoint.value_double < 1.0e308)"]
     match = re.fullmatch(r'not IsMatch\(name, "\^claude_code\[\.\]\(([a-z_|\[\].]+)\)\$"\)', conditions[2])
     assert match
     assert re.search(r'(?<!\[)\.|\.(?!\])', match.group(1)) is None
@@ -406,4 +408,48 @@ def test_empty_typed_values_deleted_before_keep_keys():
             for s in statements
             if s.startswith(f"delete_key({context}.attributes, ") and s.endswith("] == nil")
         }
-        assert sanitized - {"tenant", "repo"} <= deleted, (context, sorted(sanitized - deleted))
+        assert sanitized - {"tenant", "repo", "vcs.repository.name"} <= deleted, (context, sorted(sanitized - deleted))
+
+
+def ordered_expressions(config, processors):
+    for name in processors:
+        processor = config["processors"][name]
+        if component_type(name) == "filter":
+            for signal in processor.values():
+                if isinstance(signal, dict):
+                    for conditions in signal.values():
+                        yield from conditions
+        for key, groups in processor.items():
+            if key.endswith("_statements"):
+                for group in groups:
+                    yield from group.get("conditions", [])
+                    yield from group["statements"]
+
+
+@pytest.mark.config
+@pytest.mark.parametrize("loader", [load, load_debug], ids=["default", "debug"])
+def test_string_reads_guarded_against_non_finite_doubles(loader):
+    config = loader()
+    checked = 0
+    for name, pipeline in config["service"]["pipelines"].items():
+        guarded = set()
+        for expression in ordered_expressions(config, [p for p in pipeline["processors"] if p in config["processors"]]):
+            for path in re.findall(r'(?<!Is)String\((\w+\.attributes\["[^"]+"\])\)', expression):
+                assert path in guarded, (name, path)
+                checked += 1
+            guarded.update(re.findall(r'IsDouble\((\w+\.attributes\["[^"]+"\])\)(?:$| and not \(\1 > -1\.0e308 and \1 < 1\.0e308\))', expression))
+    assert checked >= 20
+
+
+@pytest.mark.config
+def test_service_name_enumerated_and_severity_cleared():
+    expected = 'set(resource.attributes["service.name"], "other") where resource.attributes["service.name"] == nil or not IsString(resource.attributes["service.name"]) or not IsMatch(resource.attributes["service.name"], "^(claude-code)$")'
+    groups = [
+        load()["processors"]["transform/resource"]["log_statements"][0]["statements"],
+        load()["processors"]["transform/metric_resource"]["metric_statements"][0]["statements"],
+        load_debug()["processors"]["transform/trace_resource"]["trace_statements"][0]["statements"],
+    ]
+    for statements in groups:
+        assert statements[1:] == [expected]
+    log = load()["processors"]["transform/allowlist"]["log_statements"][0]["statements"]
+    assert "set(log.severity_number, 0)" in log

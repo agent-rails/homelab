@@ -12,8 +12,14 @@ processors:
       - context: span
         statements:
           - 'keep_keys(span.attributes, ["tool_name", "model", "success", "status_code", "duration_ms", "decision", "source", "hook_event"])'
+          - 'set(span.attributes["success"], "other") where IsDouble(span.attributes["success"]) and not (span.attributes["success"] > -1.0e308 and span.attributes["success"] < 1.0e308)'
+          - 'set(span.attributes["status_code"], "other") where IsDouble(span.attributes["status_code"]) and not (span.attributes["status_code"] > -1.0e308 and span.attributes["status_code"] < 1.0e308)'
+          - 'set(span.attributes["decision"], "other") where IsDouble(span.attributes["decision"]) and not (span.attributes["decision"] > -1.0e308 and span.attributes["decision"] < 1.0e308)'
+          - 'set(span.attributes["source"], "other") where IsDouble(span.attributes["source"]) and not (span.attributes["source"] > -1.0e308 and span.attributes["source"] < 1.0e308)'
+          - 'set(span.attributes["hook_event"], "other") where IsDouble(span.attributes["hook_event"]) and not (span.attributes["hook_event"] > -1.0e308 and span.attributes["hook_event"] < 1.0e308)'
+          - 'set(span.attributes["duration_ms"], "other") where IsDouble(span.attributes["duration_ms"]) and not (span.attributes["duration_ms"] > -1.0e308 and span.attributes["duration_ms"] < 1.0e308)'
           - 'set(span.attributes["tool_name"], "other") where span.attributes["tool_name"] != nil and (not IsString(span.attributes["tool_name"]) or not IsMatch(span.attributes["tool_name"], "^[A-Za-z0-9_.-]{1,48}$"))'
-          - 'set(span.attributes["model"], "other") where span.attributes["model"] != nil and (not IsString(span.attributes["model"]) or not IsMatch(span.attributes["model"], "^claude-(fable|opus|sonnet|haiku)-[0-9]{1,2}(-[0-9]{1,2})?$"))'
+          - 'set(span.attributes["model"], "other") where span.attributes["model"] != nil and (not IsString(span.attributes["model"]) or not IsMatch(span.attributes["model"], "^claude-(fable|opus|sonnet|haiku)-[0-9]{1,2}(-[0-9]{1,2})?(-[0-9]{8})?$"))'
           - 'set(span.attributes["success"], "other") where span.attributes["success"] != nil and not IsMatch(String(span.attributes["success"]), "^(true|false)$")'
           - 'set(span.attributes["status_code"], "other") where span.attributes["status_code"] != nil and not IsMatch(String(span.attributes["status_code"]), "^[1-5][0-9]{2}$")'
           - 'set(span.attributes["decision"], "other") where span.attributes["decision"] != nil and not IsMatch(String(span.attributes["decision"]), "^(accept|reject|cancelled)$")'
@@ -46,7 +52,7 @@ processors:
       - context: resource
         statements:
           - 'keep_keys(resource.attributes, ["service.name"])'
-          - 'set(resource.attributes["service.name"], "other") where resource.attributes["service.name"] != nil and not IsMatch(String(resource.attributes["service.name"]), "^[A-Za-z0-9._-]{1,48}$")'
+          - 'set(resource.attributes["service.name"], "other") where resource.attributes["service.name"] == nil or not IsString(resource.attributes["service.name"]) or not IsMatch(resource.attributes["service.name"], "^(claude-code)$")'
 
 exporters:
   otlp_http/loki:

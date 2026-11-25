@@ -112,3 +112,38 @@ def test_allowlisted_names_with_wrong_type_dropped(stack):
     names = json.loads(stack.get(stack.url("prometheus", 9090, "/api/v1/label/__name__/values")))["data"]
     assert "claude_code_token_usage_tokens_total" in names
     assert [n for n in names if n.startswith("claude_code_") and not n.endswith("_total")] == []
+
+
+def scrape_lines(stack, needle):
+    return [line for line in stack.scrape("otel-collector", 8889).splitlines() if needle in line and not line.startswith("#")]
+
+
+@pytest.mark.integration
+def test_non_finite_log_values_do_not_reject_batch(stack):
+    send(stack, "/v1/logs", events.non_finite_logs())
+    repo = 'repo="provider-router"'
+    assert total(stack, f'agent_api_requests_total{{model="claude-sonnet-5-4",{repo}}}', 2) == 2
+    assert total(stack, f'agent_api_requests_total{{model="claude-opus-4-1-20250805",{repo}}}', 1) == 1
+    assert total(stack, 'agent_api_duration_milliseconds_count{model="claude-sonnet-5-4"}', 1) == 1
+    assert total(stack, f'agent_api_errors_total{{status_code="other",error_class="other",{repo}}}', 1) == 1
+    assert total(stack, f'agent_tool_results_total{{success="other",error_type="other",{repo}}}', 1) == 1
+    assert stack.query_prom_now('agent_tool_duration_milliseconds_count{tool_name="Bash",success="other"}') == []
+    assert total(stack, f'agent_tool_decisions_total{{decision="other",source="other",classifier_verdict="other",{repo}}}', 1) == 1
+    assert total(stack, f'agent_hook_executions_total{{hook_event="other",outcome="success",{repo}}}', 1) == 1
+    assert total(stack, f'agent_hook_executions_total{{hook_event="other",{repo}}}', 1) == 1
+    assert total(stack, 'agent_api_requests_total{model="claude-sonnet-5-4",repo="other"}', 1) == 1
+    assert total(stack, 'agent_api_requests_total{repo="memkit",tenant="other"}', 1) == 1
+    assert total(stack, 'agent_api_requests_total{repo="model-router",tenant="personal"}', 1) == 1
+    forged = scrape_lines(stack, 'repo="memkit"') + scrape_lines(stack, 'repo="model-router"')
+    assert forged and all('job="other"' in line for line in forged), forged
+
+
+@pytest.mark.integration
+def test_non_finite_datapoints_dropped(stack):
+    send(stack, "/v1/metrics", events.non_finite_metrics())
+    rows = stack.query_prom('claude_code_cost_usage_USD_total{model="claude-sonnet-5-4"}', until=lambda result: bool(result))
+    assert [(r["metric"]["session_id"], r["value"][1]) for r in rows] == [("0e000000-0000-4000-8000-000000000001", "2")]
+    assert rows[0]["metric"]["type"] == "other"
+    assert rows[0]["metric"]["speed"] == "other"
+    assert rows[0]["metric"]["tenant"] == "other"
+    assert scrape_lines(stack, "0e000000-0000-4000-8000-00000000000") == scrape_lines(stack, "0e000000-0000-4000-8000-000000000001")
