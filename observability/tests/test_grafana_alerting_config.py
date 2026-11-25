@@ -317,6 +317,13 @@ def test_dashboard_panel_ids_unique():
     assert len(ids) == len(set(ids))
 
 
+def test_dashboard_shows_labels_collapsed_to_other():
+    dashboard = json.loads(DASHBOARD_FILE.read_text())
+    panel = next(p for p in dashboard["panels"] if p["title"] == "Labels collapsed to other")
+    labels = {re.search(r"\{(\w+)=\"other\"\}", t["expr"]).group(1) for t in panel["targets"]}
+    assert labels == {"model", "error_type", "tool_name", "hook_event", "repo", "tenant"}
+
+
 def test_collector_down_summary_names_instance():
     rule = next(r for r in all_rules(load_alerting()) if r["uid"] == "agent-collector-down")
     assert "{{ with .Labels.instance }} at {{ . }}{{ end }}" in rule["annotations"]["summary"]
