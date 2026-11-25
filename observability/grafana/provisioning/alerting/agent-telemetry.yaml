@@ -30,7 +30,7 @@ groups:
         for: 5m
         isPaused: false
         annotations:
-          summary: Prometheus cannot scrape the OTel collector, so no agent telemetry is being recorded.
+          summary: Prometheus cannot scrape the OTel collector{{ with .Labels.instance }} at {{ . }}{{ end }}, so no agent telemetry is being recorded.
 
       - uid: agent-derived-events-missing
         title: No agent events while Claude Code is active
@@ -56,7 +56,7 @@ groups:
         noDataState: Alerting
         execErrState: Alerting
         for: 5m
-        isPaused: false
+        isPaused: true
         annotations:
           summary: Claude Code active time grew over 30 minutes but no event-derived API request was counted.
 

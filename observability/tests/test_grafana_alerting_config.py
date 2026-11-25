@@ -79,6 +79,8 @@ EXPECTED_STATES = {
     "agent-hook-non-blocking-errors": ("OK", "Error"),
 }
 
+PAUSED_UNTIL_CUTOVER = {"agent-derived-events-missing"}
+
 RARE_EVENT_RULES = {
     "agent-d2c-datapoint-errors",
     "agent-d2c-streams-dropped",
@@ -197,7 +199,7 @@ def test_every_rule_has_specified_nodata_error_and_pending():
         expected = EXPECTED_STATES[rule["uid"]]
         assert (rule["noDataState"], rule["execErrState"]) == expected, rule["uid"]
         assert rule["for"] == "5m", rule["uid"]
-        assert rule["isPaused"] is False, rule["uid"]
+        assert rule["isPaused"] is (rule["uid"] in PAUSED_UNTIL_CUTOVER), rule["uid"]
 
 
 def test_rare_event_rules_use_new_series_form():
@@ -313,3 +315,8 @@ def test_dashboard_panel_ids_unique():
     dashboard = json.loads(DASHBOARD_FILE.read_text())
     ids = [p["id"] for p in dashboard["panels"]]
     assert len(ids) == len(set(ids))
+
+
+def test_collector_down_summary_names_instance():
+    rule = next(r for r in all_rules(load_alerting()) if r["uid"] == "agent-collector-down")
+    assert "{{ with .Labels.instance }} at {{ . }}{{ end }}" in rule["annotations"]["summary"]

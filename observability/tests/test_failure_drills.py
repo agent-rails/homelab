@@ -39,16 +39,16 @@ def test_prometheus_retention_is_size_bounded_and_self_scraped():
 
 @pytest.mark.integration
 def test_prometheus_paused_no_loss(stack):
-    send(stack, events.api_requests(4, "paused"))
-    assert total(stack, 'agent_api_requests_total{model="paused"}', 4) == 4
+    send(stack, events.api_requests(4, "claude-haiku-2-2"))
+    assert total(stack, 'agent_api_requests_total{model="claude-haiku-2-2"}', 4) == 4
     stack.compose(["pause", "prometheus"])
     try:
         for _ in range(3):
-            send(stack, events.api_requests(5, "paused"))
+            send(stack, events.api_requests(5, "claude-haiku-2-2"))
         time.sleep(12)
     finally:
         stack.compose(["unpause", "prometheus"])
-    assert total(stack, 'agent_api_requests_total{model="paused"}', 19) == 19
+    assert total(stack, 'agent_api_requests_total{model="claude-haiku-2-2"}', 19) == 19
 
 
 @pytest.mark.integration

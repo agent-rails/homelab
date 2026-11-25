@@ -96,6 +96,7 @@ def test_alert_rules_provisioned_as_in_file(grafana):
         assert loaded[uid]["execErrState"] == rule["execErrState"], uid
         assert loaded[uid]["for"] == rule["for"], uid
         assert loaded[uid]["provenance"] == "file", uid
+        assert loaded[uid]["isPaused"] is rule["isPaused"], uid
 
 
 def test_contact_point_reads_webhook_from_secret_file(grafana):
@@ -157,7 +158,7 @@ def test_dashboard_queries_parse_in_prometheus(grafana):
 
 def test_single_api_error_through_collector_drives_error_rate_rule(stack, grafana):
     expr, threshold = rule_query_and_threshold(file_rules()[ERROR_RATE_RULE])
-    send_logs(stack, events.api_errors(1, "grafana-rule"))
+    send_logs(stack, events.api_errors(1, "claude-haiku-2-3"))
     rows = stack.query_prom(
         expr,
         until=lambda result: bool(result) and float(result[0]["value"][1]) > threshold,
@@ -197,7 +198,7 @@ def test_every_golden_metric_exists_in_real_pipeline(stack):
 
 
 def test_rules_evaluate_without_query_errors(grafana):
-    expected = set(file_rules())
+    expected = {uid for uid, rule in file_rules().items() if not rule["isPaused"]}
     deadline = time.monotonic() + EVALUATION_TIMEOUT_S
     while True:
         rules = {uid: r for uid, r in grafana_rule_states(grafana).items() if uid in expected}
