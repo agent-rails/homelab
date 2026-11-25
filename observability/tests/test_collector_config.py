@@ -373,3 +373,13 @@ def test_debug_traces_drop_links_and_scope_metadata():
     assert groups["scope"] == ['keep_keys(scope.attributes, [])', 'set(scope.name, "claude_code")', 'set(scope.version, "")']
     logs = {g["context"]: g["statements"] for g in load()["processors"]["transform/resource"]["log_statements"]}
     assert logs["scope"] == groups["scope"]
+
+
+@pytest.mark.config
+def test_ingest_path_containers_hardened():
+    services = yaml.safe_load(conftest.REAL_COMPOSE.read_text())["services"]
+    for name in ("otel-collector", "tempo", "loki"):
+        assert services[name]["cap_drop"] == ["ALL"], name
+        assert services[name]["security_opt"] == ["no-new-privileges:true"], name
+        assert services[name]["mem_limit"] == "512m", name
+    assert services["otel-collector"]["read_only"] is True

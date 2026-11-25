@@ -31,6 +31,9 @@ services:
       - ${PWD}/otel-collector/empty.yaml:/etc/otelcol/empty.yaml:ro
       - ${PWD}/otel-collector/config.debug.yaml:/etc/otelcol/config.debug.yaml:ro
     mem_limit: 512m
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
     restart: unless-stopped
 
   tempo:
@@ -41,6 +44,9 @@ services:
     volumes:
       - ${PWD}/tempo/config.yaml:/etc/tempo/config.yaml:ro
       - tempo-data:/var/tempo
+    mem_limit: 512m
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
     restart: unless-stopped
 
   loki:
@@ -51,6 +57,9 @@ services:
     volumes:
       - ${PWD}/loki/config.yaml:/etc/loki/config.yaml:ro
       - loki-data:/loki
+    mem_limit: 512m
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
     restart: unless-stopped
 
   grafana:
