@@ -198,8 +198,9 @@ PASSTHROUGH_METRICS = {
 def test_passthrough_metric_allowlist_golden():
     config = load()
     conditions = config["processors"]["filter/metrics"]["metrics"]["metric"]
-    assert len(conditions) == 1
-    match = re.fullmatch(r'not IsMatch\(name, "\^claude_code\[\.\]\(([a-z_|\[\].]+)\)\$"\)', conditions[0])
+    assert conditions[:2] == ["type != METRIC_DATA_TYPE_SUM", "type == METRIC_DATA_TYPE_SUM and is_monotonic == false"]
+    assert len(conditions) == 3
+    match = re.fullmatch(r'not IsMatch\(name, "\^claude_code\[\.\]\(([a-z_|\[\].]+)\)\$"\)', conditions[2])
     assert match
     assert re.search(r'(?<!\[)\.|\.(?!\])', match.group(1)) is None
     names = match.group(1).replace("[.]", ".").split("|")
@@ -357,7 +358,9 @@ def test_free_text_labels_require_string_values():
 def test_hook_counts_default_to_zero_and_bad_duration_dropped():
     log = load()["processors"]["transform/allowlist"]["log_statements"][0]["statements"]
     for key in ("num_success", "num_blocking", "num_non_blocking_error", "num_cancelled"):
-        assert any(s.startswith(f'set(log.attributes["{key}"], "0") where log.attributes["{key}"] == nil or ') for s in log), key
+        hook = f'set(log.attributes["{key}"], "0") where log.attributes["event.name"] == "hook_execution_complete" and (log.attributes["{key}"] == nil or '
+        assert any(s.startswith(hook) and s.endswith('"^[0-9]{1,3}$"))') for s in log), key
+        assert f'delete_key(log.attributes, "{key}") where log.attributes["event.name"] != "hook_execution_complete"' in log, key
     assert any(s.startswith('delete_key(log.attributes, "duration_ms") where ') for s in log)
     definitions = {d["name"]: d for d in load()["connectors"]["signal_to_metrics"]["logs"]}
     for name in ("agent.api.duration", "agent.tool.duration"):
@@ -383,3 +386,24 @@ def test_ingest_path_containers_hardened():
         assert services[name]["security_opt"] == ["no-new-privileges:true"], name
         assert services[name]["mem_limit"] == "512m", name
     assert services["otel-collector"]["read_only"] is True
+
+
+@pytest.mark.config
+def test_empty_typed_values_deleted_before_keep_keys():
+    contexts = [
+        ("log", load()["processors"]["transform/allowlist"]["log_statements"][0]["statements"]),
+        ("datapoint", load()["processors"]["transform/metric_attrs"]["metric_statements"][0]["statements"]),
+        ("span", load_debug()["processors"]["transform/traces"]["trace_statements"][0]["statements"]),
+    ]
+    for context, statements in contexts:
+        sanitized = {
+            s.split('"')[1]
+            for s in statements
+            if s.startswith(f"set({context}.attributes[") and '"other"' in s
+        }
+        deleted = {
+            s.split('"')[1]
+            for s in statements
+            if s.startswith(f"delete_key({context}.attributes, ") and s.endswith("] == nil")
+        }
+        assert sanitized - {"tenant", "repo"} <= deleted, (context, sorted(sanitized - deleted))

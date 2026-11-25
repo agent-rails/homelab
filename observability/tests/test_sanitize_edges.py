@@ -83,3 +83,32 @@ def test_invalid_duration_counts_request_but_not_histogram(stack):
     assert total(stack, 'agent_api_requests_total{model="claude-haiku-3-1"}', 1) == 1
     assert total(stack, 'agent_api_duration_milliseconds_count{model="claude-haiku-3-2"}', 1) == 1
     assert stack.query_prom_now('agent_api_duration_milliseconds_count{model="claude-haiku-3-1"}') == []
+
+
+@pytest.mark.integration
+def test_empty_typed_values_fall_back_to_defaults(stack):
+    send(stack, "/v1/logs", events.empty_value_logs())
+    assert total(stack, 'agent_api_requests_total{model="unknown"}', 1) == 1
+    assert total(stack, 'agent_tool_results_total{tool_name="unknown",success="unknown",error_type="none"}', 1) == 1
+    assert total(stack, 'agent_hook_executions_total{hook_event="unknown",outcome="success"}', 1) == 1
+    assert stack.query_prom_now('agent_api_duration_milliseconds_count{model="unknown"}') == []
+    assert '=""' not in stack.scrape("otel-collector", 8889)
+
+
+@pytest.mark.integration
+def test_empty_typed_datapoint_labels_dropped(stack):
+    send(stack, "/v1/metrics", events.empty_value_metrics())
+    rows = stack.query_prom("claude_code_commit_count_total", until=lambda result: bool(result))
+    assert [r["value"][1] for r in rows] == ["3"]
+    assert not {"session_id", "model", "terminal_type", "type", "speed"} & set(rows[0]["metric"])
+    assert '=""' not in stack.scrape("otel-collector", 8889)
+
+
+@pytest.mark.integration
+def test_allowlisted_names_with_wrong_type_dropped(stack):
+    send(stack, "/v1/metrics", events.forged_metric_types())
+    send(stack, "/v1/metrics", events.forged_metric_metadata())
+    assert total(stack, 'claude_code_token_usage_tokens_total{model="claude-haiku-3-3"}', 1) == 1
+    names = json.loads(stack.get(stack.url("prometheus", 9090, "/api/v1/label/__name__/values")))["data"]
+    assert "claude_code_token_usage_tokens_total" in names
+    assert [n for n in names if n.startswith("claude_code_") and not n.endswith("_total")] == []

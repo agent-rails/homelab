@@ -1,4 +1,5 @@
 import base64
+import time
 
 import otlp
 
@@ -225,3 +226,50 @@ def api_request_bad_duration(model):
         {"service.name": "claude-code", "tenant.id": "personal"},
         [{"event.name": "api_request", "model": model, "duration_ms": "not-a-number", "vcs.repository.name": "agent-bailiff"}],
     )
+
+
+def empty_value_logs():
+    return otlp.logs_payload(
+        {"service.name": "claude-code", "tenant.id": "personal"},
+        [
+            {"event.name": "api_request", "model": {}, "duration_ms": {}, "vcs.repository.name": "agent-bailiff"},
+            {"event.name": "tool_result", "tool_name": {}, "success": {}, "error_type": {}, "vcs.repository.name": "agent-bailiff"},
+            {"event.name": "hook_execution_complete", "hook_event": {}, "num_success": 1, "vcs.repository.name": "agent-bailiff"},
+        ],
+    )
+
+
+def empty_value_metrics():
+    point = {"session.id": {}, "model": {}, "terminal.type": {}, "type": {}, "speed": {}}
+    return otlp.sum_payload(
+        {"service.name": "claude-code", "tenant.id": "personal"},
+        "claude_code.commit.count",
+        [(point, 3.0)],
+        otlp.CUMULATIVE,
+    )
+
+
+def forged_metric_types():
+    point = {"session.id": "0c000000-0000-4000-8000-000000000001", "model": "claude-haiku-5-1"}
+    now = str(time.time_ns())
+    attributes = otlp.attrs(point)
+    metrics = [
+        {"name": "claude_code.token.usage", "gauge": {"dataPoints": [{"timeUnixNano": now, "asDouble": 1.0, "attributes": attributes}]}},
+        {
+            "name": "claude_code.cost.usage",
+            "histogram": {
+                "aggregationTemporality": otlp.CUMULATIVE,
+                "dataPoints": [{"timeUnixNano": now, "startTimeUnixNano": now, "count": "1", "sum": 1.0, "bucketCounts": ["1"], "explicitBounds": [], "attributes": attributes}],
+            },
+        },
+        {
+            "name": "claude_code.commit.count",
+            "sum": {
+                "aggregationTemporality": otlp.CUMULATIVE,
+                "isMonotonic": False,
+                "dataPoints": [{"timeUnixNano": now, "startTimeUnixNano": now, "asDouble": 1.0, "attributes": attributes}],
+            },
+        },
+    ]
+    resource = {"attributes": otlp.attrs({"service.name": "claude-code", "tenant.id": "personal"})}
+    return {"resourceMetrics": [{"resource": resource, "scopeMetrics": [{"scope": {"name": "x"}, "metrics": metrics}]}]}
