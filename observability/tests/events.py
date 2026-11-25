@@ -1,3 +1,5 @@
+import base64
+
 import otlp
 
 SENTINEL = "SENTINEL-7f3a9c41"
@@ -153,7 +155,7 @@ def passthrough_forged_batch():
     return otlp.merge(*batches)
 
 
-def session_tokens(session_id, value, start_ns, temporality=otlp.CUMULATIVE, name="claude_code.token.usage", unit="tokens", attributes=None):
+def session_tokens(session_id, value, start_ns, temporality=otlp.CUMULATIVE, name="claude_code.token.usage", unit="tokens", attributes=None, time_ns=None):
     attributes = attributes or {"type": "input", "model": "claude-opus-5-5"}
     return otlp.sum_payload(
         {"service.name": "claude-code", "tenant.id": "personal"},
@@ -162,4 +164,64 @@ def session_tokens(session_id, value, start_ns, temporality=otlp.CUMULATIVE, nam
         temporality,
         start_ns=start_ns,
         unit=unit,
+        time_ns=time_ns,
+    )
+
+
+TYPED_VALUES = {
+    "bytes": {"bytesValue": base64.b64encode(SENTINEL.encode()).decode()},
+    "array": {"arrayValue": {"values": [{"stringValue": SENTINEL}]}},
+    "kvlist": {"kvlistValue": {"values": [{"key": SENTINEL, "value": {"stringValue": SENTINEL}}]}},
+    "double": {"doubleValue": 7.25},
+}
+
+
+def typed_value_logs():
+    return otlp.logs_payload(
+        {"service.name": "claude-code", "tenant.id": "personal"},
+        [
+            {"event.name": "api_request", "model": value, "duration_ms": 100, "vcs.repository.name": "agent-bailiff"}
+            for value in TYPED_VALUES.values()
+        ]
+        + [
+            {"event.name": "tool_result", "tool_name": value, "success": "true", "duration_ms": 5, "vcs.repository.name": "agent-bailiff"}
+            for value in TYPED_VALUES.values()
+        ],
+    )
+
+
+def typed_value_metrics():
+    points = [
+        ({"session.id": value, "model": value, "tool_name": value, "terminal.type": value, "language": value, "type": "input"}, 1.0)
+        for value in TYPED_VALUES.values()
+    ]
+    return otlp.sum_payload(
+        {"service.name": "claude-code", "tenant.id": "personal"},
+        "claude_code.token.usage",
+        points,
+        otlp.CUMULATIVE,
+        unit="tokens",
+    )
+
+
+def forged_metric_metadata():
+    point = {"session.id": "0b000000-0000-4000-8000-000000000001", "type": "input", "model": "claude-haiku-3-3"}
+    resource = {"service.name": "claude-code", "tenant.id": "personal"}
+    return otlp.merge(
+        otlp.sum_payload(resource, "claude_code.sessionXcount", [(point, 1.0)], otlp.CUMULATIVE),
+        otlp.sum_payload(resource, "claude_code.token.usage", [(point, 1.0)], otlp.CUMULATIVE, unit="evilunit", description=SENTINEL),
+    )
+
+
+def hook_without_counts(hook_event, num_success):
+    return otlp.logs_payload(
+        {"service.name": "claude-code", "tenant.id": "personal"},
+        [{"event.name": "hook_execution_complete", "hook_event": hook_event, "num_success": num_success, "vcs.repository.name": "agent-bailiff"}],
+    )
+
+
+def api_request_bad_duration(model):
+    return otlp.logs_payload(
+        {"service.name": "claude-code", "tenant.id": "personal"},
+        [{"event.name": "api_request", "model": model, "duration_ms": "not-a-number", "vcs.repository.name": "agent-bailiff"}],
     )

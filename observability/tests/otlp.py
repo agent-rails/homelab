@@ -7,7 +7,9 @@ import urllib.request
 def attrs(values):
     out = []
     for key, value in values.items():
-        if isinstance(value, bool):
+        if isinstance(value, dict):
+            out.append({"key": key, "value": value})
+        elif isinstance(value, bool):
             out.append({"key": key, "value": {"boolValue": value}})
         elif isinstance(value, int):
             out.append({"key": key, "value": {"intValue": str(value)}})
@@ -16,18 +18,20 @@ def attrs(values):
     return out
 
 
-def logs_payload(resource, records):
+def logs_payload(resource, records, scope=None):
     base = time.time_ns()
     log_records = []
     for index, record in enumerate(records):
         now = str(base + index)
         record = dict(record)
         body = record.pop("_body", "")
+        severity = record.pop("_severity", "")
         log_records.append(
             {
                 "timeUnixNano": now,
                 "observedTimeUnixNano": now,
                 "body": {"stringValue": body},
+                "severityText": severity,
                 "attributes": attrs(record),
             }
         )
@@ -37,7 +41,7 @@ def logs_payload(resource, records):
                 "resource": {"attributes": attrs(resource)},
                 "scopeLogs": [
                     {
-                        "scope": {"name": "com.anthropic.claude_code.events"},
+                        "scope": scope or {"name": "com.anthropic.claude_code.events"},
                         "logRecords": log_records,
                     }
                 ],
@@ -46,8 +50,8 @@ def logs_payload(resource, records):
     }
 
 
-def sum_payload(resource, name, datapoints, temporality, start_ns=None, monotonic=True, unit=""):
-    now = str(time.time_ns())
+def sum_payload(resource, name, datapoints, temporality, start_ns=None, monotonic=True, unit="", time_ns=None, description=""):
+    now = str(time_ns if time_ns is not None else time.time_ns())
     start = str(start_ns if start_ns is not None else time.time_ns())
     points = [
         {
@@ -69,6 +73,7 @@ def sum_payload(resource, name, datapoints, temporality, start_ns=None, monotoni
                             {
                                 "name": name,
                                 "unit": unit,
+                                "description": description,
                                 "sum": {
                                     "aggregationTemporality": temporality,
                                     "isMonotonic": monotonic,
@@ -83,10 +88,10 @@ def sum_payload(resource, name, datapoints, temporality, start_ns=None, monotoni
     }
 
 
-def traces_payload(resource, spans, trace_id="5b8efff798038103d269b633813fc60c"):
+def traces_payload(resource, spans, trace_id="5b8efff798038103d269b633813fc60c", scope=None):
     now = time.time_ns()
     out = []
-    for index, (name, span_attrs, event_attrs) in enumerate(spans):
+    for index, (name, span_attrs, event_attrs, *links) in enumerate(spans):
         out.append(
             {
                 "traceId": trace_id,
@@ -98,13 +103,14 @@ def traces_payload(resource, spans, trace_id="5b8efff798038103d269b633813fc60c")
                 "attributes": attrs(span_attrs),
                 "events": [{"timeUnixNano": str(now), "name": "secret-event", "attributes": attrs(event_attrs)}],
                 "status": {"code": 2, "message": event_attrs.get("message", "")},
+                "links": links[0] if links else [],
             }
         )
     return {
         "resourceSpans": [
             {
                 "resource": {"attributes": attrs(resource)},
-                "scopeSpans": [{"scope": {"name": "com.anthropic.claude_code"}, "spans": out}],
+                "scopeSpans": [{"scope": scope or {"name": "com.anthropic.claude_code"}, "spans": out}],
             }
         ]
     }
