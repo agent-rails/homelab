@@ -190,6 +190,15 @@ Put one value per file. A trailing newline is fine: Grafana trims it. `docker co
 up` checks only that each file exists. Nothing checks that a file is non-empty, so
 make sure each one holds its value before starting Grafana.
 
+Switching from the earlier Slack webhook:
+
+1. Create the five files above, then `docker compose up -d grafana`.
+2. In Grafana, open Alerting, then Contact points, and send a test from
+   `email-owner`. Confirm it arrives.
+3. Revoke the incoming webhook in Slack.
+4. Delete `~/.config/observability/slack-webhook.url`.
+5. If the live Grafana still lists a `slack-dm` contact point, delete it there.
+
 ### Claude Code usage
 
 Prometheus accepts OpenTelemetry metrics directly (`--web.enable-otlp-receiver`), so
