@@ -1,10 +1,11 @@
 # docker-compose.yaml
 services:
   prometheus:
-    image: prom/prometheus:latest
+    image: prom/prometheus:v3.13.2@sha256:508729e0e2d18e11fd742a5a5ca70e557b940a93948c3c95fd0123a6fd538b69
     command:
       - --config.file=/etc/prometheus/prometheus.yml
       - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.size=10GB
       - --web.enable-otlp-receiver # accept OTLP metrics from Claude Code at /api/v1/otlp/v1/metrics
     extra_hosts:
       - "host.docker.internal:host-gateway"     # allow a direct connection from container to the local machine
@@ -18,8 +19,51 @@ services:
       - mlx_gateway_token
       - ai_gateway_ca
 
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.165.0@sha256:e40d61f10c9a617cca1ffd1be4d7e2b3a4b0f0001798ff07e58cabe82e618cea
+    command:
+      - --config=/etc/otelcol/config.yaml
+      - --config=${OTELCOL_DEBUG_CONFIG:-/etc/otelcol/empty.yaml}
+    ports:
+      - "127.0.0.1:4318:4318"   # local only: OTLP http ingest is unauthenticated
+    volumes:
+      - ${PWD}/otel-collector/config.yaml:/etc/otelcol/config.yaml:ro
+      - ${PWD}/otel-collector/empty.yaml:/etc/otelcol/empty.yaml:ro
+      - ${PWD}/otel-collector/config.debug.yaml:/etc/otelcol/config.debug.yaml:ro
+    mem_limit: 512m
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    restart: unless-stopped
+
+  tempo:
+    image: grafana/tempo:2.10.10@sha256:12b0820f13ffa10ce956b6e9acc3b03f3cffded99109be6cc09d106fe56e5d38
+    profiles: [traces]
+    command:
+      - -config.file=/etc/tempo/config.yaml
+    volumes:
+      - ${PWD}/tempo/config.yaml:/etc/tempo/config.yaml:ro
+      - tempo-data:/var/tempo
+    mem_limit: 512m
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    restart: unless-stopped
+
+  loki:
+    image: grafana/loki:3.6.20@sha256:be040ec94865dabe4821ce1c0f109452bd4b5acb566ae376672696eb43caedb7
+    profiles: [logs]
+    command:
+      - -config.file=/etc/loki/config.yaml
+    volumes:
+      - ${PWD}/loki/config.yaml:/etc/loki/config.yaml:ro
+      - loki-data:/loki
+    mem_limit: 512m
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    restart: unless-stopped
+
   grafana:
-    image: grafana/grafana:latest
+    image: grafana/grafana:13.1.3@sha256:ab5cb380e3ff3172d6c8bd2e7cfd31cce977d2881b260e1f5bc089bf0b759b43
     depends_on:
       - prometheus
     ports:
@@ -28,10 +72,26 @@ services:
       - ${PWD}/grafana/provisioning:/etc/grafana/provisioning:ro
       - ${PWD}/grafana/dashboards:/var/lib/grafana/dashboards:ro
       - grafana-data:/var/lib/grafana
+    environment:
+      GF_SMTP_ENABLED: "true"
+      GF_SMTP_STARTTLS_POLICY: MandatoryStartTLS
+      GF_SMTP_SKIP_VERIFY: "false"
+      GF_SMTP_HOST__FILE: /run/secrets/smtp_host
+      GF_SMTP_USER__FILE: /run/secrets/smtp_user
+      GF_SMTP_FROM_ADDRESS__FILE: /run/secrets/smtp_from_address
+      GF_SMTP_PASSWORD__FILE: /run/secrets/smtp_password
+    secrets:
+      - smtp_host
+      - smtp_user
+      - smtp_from_address
+      - smtp_password
+      - alert_email_to
 
 volumes:
   prometheus-data:
   grafana-data:
+  tempo-data:
+  loki-data:
 
 secrets:
   litellm_metrics_key:
@@ -40,3 +100,13 @@ secrets:
     file: ${HOME}/.config/ai-gateway/mlx.token
   ai_gateway_ca:
     file: ${HOME}/.config/ai-gateway/data/caddy/pki/authorities/local/root.crt
+  smtp_host:
+    file: ${HOME}/.config/observability/smtp-host
+  smtp_user:
+    file: ${HOME}/.config/observability/smtp-user
+  smtp_from_address:
+    file: ${HOME}/.config/observability/smtp-from-address
+  smtp_password:
+    file: ${HOME}/.config/observability/smtp-password
+  alert_email_to:
+    file: ${HOME}/.config/observability/alert-email-to

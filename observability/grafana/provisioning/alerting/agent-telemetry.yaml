@@ -1,0 +1,348 @@
+apiVersion: 1
+
+groups:
+  - orgId: 1
+    name: agent-telemetry-absence
+    folder: Agent telemetry
+    interval: 1m
+    rules:
+      - uid: agent-collector-down
+        title: OTel collector down
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange: {from: 300, to: 0}
+            datasourceUid: prometheus
+            model:
+              refId: A
+              instant: true
+              expr: up{job="otel-collector"}
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator: {type: lt, params: [1]}
+        noDataState: Alerting
+        execErrState: Alerting
+        for: 5m
+        isPaused: false
+        annotations:
+          summary: Prometheus cannot scrape the OTel collector{{ with .Labels.instance }} at {{ . }}{{ end }}, so no agent telemetry is being recorded.
+
+      - uid: agent-derived-events-missing
+        title: No agent events while Claude Code is active
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange: {from: 1800, to: 0}
+            datasourceUid: prometheus
+            model:
+              refId: A
+              instant: true
+              expr: >-
+                ((sum(increase(claude_code_active_time_seconds_total[30m])) or vector(0)) > bool 0)
+                * ((sum(increase(agent_api_requests_total[30m]) > 0 or (agent_api_requests_total unless agent_api_requests_total offset 30m)) or vector(0)) == bool 0)
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator: {type: gt, params: [0]}
+        noDataState: Alerting
+        execErrState: Alerting
+        for: 5m
+        isPaused: true
+        annotations:
+          summary: Claude Code active time grew over 30 minutes but no event-derived API request was counted.
+
+      - uid: agent-prometheus-unreachable
+        title: Prometheus unreachable
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange: {from: 300, to: 0}
+            datasourceUid: prometheus
+            model:
+              refId: A
+              instant: true
+              expr: up{job="prometheus"}
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator: {type: lt, params: [1]}
+        noDataState: Alerting
+        execErrState: Alerting
+        for: 5m
+        isPaused: false
+        annotations:
+          summary: Grafana cannot query Prometheus, or Prometheus does not scrape itself.
+
+  - orgId: 1
+    name: agent-telemetry-pipeline
+    folder: Agent telemetry
+    interval: 1m
+    rules:
+      - uid: agent-d2c-datapoint-errors
+        title: Collector delta conversion errors
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange: {from: 900, to: 0}
+            datasourceUid: prometheus
+            model:
+              refId: A
+              instant: true
+              expr: >-
+                sum by (error) (increase(otelcol_deltatocumulative_datapoints{error!="",error!="limit"}[15m]) > 0
+                or (otelcol_deltatocumulative_datapoints{error!="",error!="limit"} unless otelcol_deltatocumulative_datapoints{error!="",error!="limit"} offset 15m))
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator: {type: gt, params: [0]}
+        noDataState: OK
+        execErrState: Error
+        for: 5m
+        isPaused: false
+        annotations:
+          summary: The collector rejected delta datapoints while converting them to cumulative.
+
+      - uid: agent-d2c-streams-dropped
+        title: Collector dropped metric streams at limit
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange: {from: 900, to: 0}
+            datasourceUid: prometheus
+            model:
+              refId: A
+              instant: true
+              expr: >-
+                sum(increase(otelcol_deltatocumulative_datapoints{error="limit"}[15m]) > 0
+                or (otelcol_deltatocumulative_datapoints{error="limit"} unless otelcol_deltatocumulative_datapoints{error="limit"} offset 15m))
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator: {type: gt, params: [0]}
+        noDataState: OK
+        execErrState: Error
+        for: 5m
+        isPaused: false
+        annotations:
+          summary: The collector hit max_streams and dropped datapoints of new metric streams.
+
+      - uid: agent-prometheus-wal-write-failures
+        title: Prometheus WAL write failures
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange: {from: 900, to: 0}
+            datasourceUid: prometheus
+            model:
+              refId: A
+              instant: true
+              expr: increase(prometheus_tsdb_wal_writes_failed_total[15m])
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator: {type: gt, params: [0]}
+        noDataState: OK
+        execErrState: Error
+        for: 5m
+        isPaused: false
+        annotations:
+          summary: Prometheus failed to write its WAL, usually a full disk. Samples are being lost.
+
+      - uid: agent-prometheus-out-of-order-samples
+        title: Prometheus out-of-order samples
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange: {from: 900, to: 0}
+            datasourceUid: prometheus
+            model:
+              refId: A
+              instant: true
+              expr: sum(increase(prometheus_target_scrapes_sample_out_of_order_total[15m]))
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator: {type: gt, params: [0]}
+        noDataState: OK
+        execErrState: Error
+        for: 5m
+        isPaused: false
+        annotations:
+          summary: Prometheus rejected scraped samples as out of order.
+
+  - orgId: 1
+    name: agent-failures
+    folder: Agent telemetry
+    interval: 1m
+    rules:
+      - uid: agent-api-error-rate
+        title: Model API error rate above 5 percent
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange: {from: 900, to: 0}
+            datasourceUid: prometheus
+            model:
+              refId: A
+              instant: true
+              expr: >-
+                sum by (error_class) (increase(agent_api_errors_total[15m]) > 0 or (agent_api_errors_total unless agent_api_errors_total offset 15m))
+                / on() group_left()
+                ((sum(increase(agent_api_requests_total[15m])) or vector(0))
+                + sum(increase(agent_api_errors_total[15m]) > 0 or (agent_api_errors_total unless agent_api_errors_total offset 15m)))
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator: {type: gt, params: [0.05]}
+        noDataState: OK
+        execErrState: Error
+        for: 5m
+        isPaused: false
+        annotations:
+          summary: More than 5 percent of model API calls failed over 15 minutes for this error class.
+
+      - uid: agent-tool-errors
+        title: Tool errors above 10 per 15 minutes
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange: {from: 900, to: 0}
+            datasourceUid: prometheus
+            model:
+              refId: A
+              instant: true
+              expr: >-
+                sum by (error_type) (increase(agent_tool_results_total{success="false"}[15m]) > 0
+                or (agent_tool_results_total{success="false"} unless agent_tool_results_total{success="false"} offset 15m))
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator: {type: gt, params: [10]}
+        noDataState: OK
+        execErrState: Error
+        for: 5m
+        isPaused: false
+        annotations:
+          summary: More than 10 tool calls failed with this error type over 15 minutes.
+
+      - uid: agent-classifier-outage
+        title: Permission classifier unavailable
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange: {from: 900, to: 0}
+            datasourceUid: prometheus
+            model:
+              refId: A
+              instant: true
+              expr: >-
+                sum by (classifier_verdict) (increase(agent_tool_decisions_total{classifier_verdict=~"unavailable|no_verdict"}[15m]) > 0
+                or (agent_tool_decisions_total{classifier_verdict=~"unavailable|no_verdict"} unless agent_tool_decisions_total{classifier_verdict=~"unavailable|no_verdict"} offset 15m))
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator: {type: gt, params: [0]}
+        noDataState: OK
+        execErrState: Error
+        for: 5m
+        isPaused: false
+        annotations:
+          summary: Tool decisions were made without a classifier verdict.
+
+      - uid: agent-hook-non-blocking-errors
+        title: Hook non-blocking errors
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange: {from: 900, to: 0}
+            datasourceUid: prometheus
+            model:
+              refId: A
+              instant: true
+              expr: >-
+                sum by (hook_event) (increase(agent_hook_executions_total{outcome="non_blocking_error"}[15m]) > 0
+                or (agent_hook_executions_total{outcome="non_blocking_error"} unless agent_hook_executions_total{outcome="non_blocking_error"} offset 15m))
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator: {type: gt, params: [0]}
+        noDataState: OK
+        execErrState: Error
+        for: 5m
+        isPaused: false
+        annotations:
+          summary: A hook failed without blocking the tool call, so its check did not run.
+
+contactPoints:
+  - orgId: 1
+    name: email-owner
+    receivers:
+      - uid: agent-email
+        type: email
+        disableResolveMessage: false
+        settings:
+          addresses: $__file{/run/secrets/alert_email_to}
+          subject: '{{ template "agent.email.subject" . }}'
+          message: '{{ template "agent.email.message" . }}'
+
+policies:
+  - orgId: 1
+    receiver: email-owner
+    group_by: [grafana_folder, alertname]
+    group_wait: 30s
+    group_interval: 5m
+    repeat_interval: 4h
+
+templates:
+  - orgId: 1
+    name: agent-telemetry
+    template: |
+      {{ define "agent.email.subject" }}[{{ .Status | toUpper }}] {{ .CommonLabels.alertname }}{{ end }}
+      {{ define "agent.email.message" }}{{ range .Alerts }}{{ .Status }}:{{ range .Labels.SortedPairs }}{{ if ne .Name "alertname" }} {{ .Name }}={{ .Value }}{{ end }}{{ end }}
+      {{ .Annotations.summary }}
+      {{ end }}{{ end }}

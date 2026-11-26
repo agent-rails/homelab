@@ -172,6 +172,33 @@ Prometheus and Grafana listen on `127.0.0.1` only and keep their data in named
 volumes. Grafana (default `admin`/`admin`) provisions the Prometheus datasource
 (uid `prometheus`) and the Claude Code dashboard itself.
 
+### Alert email
+
+Grafana emails alerts over SMTP with mandatory STARTTLS and certificate checks. It
+reads every SMTP setting from a Docker secret, so create these files in
+`~/.config/observability/`, each with mode `0600` and none committed:
+
+| File | Content |
+|---|---|
+| `smtp-host` | `<host>:587` |
+| `smtp-user` | SMTP login |
+| `smtp-from-address` | Sender address |
+| `smtp-password` | SMTP password (for Gmail, an app password) |
+| `alert-email-to` | Address that receives alerts |
+
+Put one value per file. A trailing newline is fine: Grafana trims it. `docker compose
+up` checks only that each file exists. Nothing checks that a file is non-empty, so
+make sure each one holds its value before starting Grafana.
+
+Switching from the earlier Slack webhook:
+
+1. Create the five files above, then `docker compose up -d grafana`.
+2. In Grafana, open Alerting, then Contact points, and send a test from
+   `email-owner`. Confirm it arrives.
+3. Revoke the incoming webhook in Slack.
+4. Delete `~/.config/observability/slack-webhook.url`.
+5. If the live Grafana still lists a `slack-dm` contact point, delete it there.
+
 ### Claude Code usage
 
 Prometheus accepts OpenTelemetry metrics directly (`--web.enable-otlp-receiver`), so

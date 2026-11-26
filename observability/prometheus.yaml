@@ -23,3 +23,14 @@ scrape_configs:
     static_configs:
       - targets:
           - 'host.docker.internal:4000'
+
+  - job_name: otel-collector
+    static_configs:
+      - targets:
+          - 'otel-collector:8889'
+          - 'otel-collector:8888'
+
+  - job_name: prometheus
+    static_configs:
+      - targets:
+          - 'localhost:9090'
