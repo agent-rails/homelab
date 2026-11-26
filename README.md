@@ -172,6 +172,18 @@ Prometheus and Grafana listen on `127.0.0.1` only and keep their data in named
 volumes. Grafana (default `admin`/`admin`) provisions the Prometheus datasource
 (uid `prometheus`) and the Claude Code dashboard itself.
 
+### Alert email
+
+Grafana emails alerts over SMTP with mandatory STARTTLS and certificate checks.
+`docker compose up` fails to create Grafana until these files exist in
+`~/.config/observability/`, each with mode `0600` and none committed:
+
+- `smtp.env`: `GF_SMTP_HOST=<host>:587`, `GF_SMTP_USER=<login>` and
+  `GF_SMTP_FROM_ADDRESS=<sender>`, one per line. Do not put the password or TLS
+  settings here; Compose sets those and Grafana exits if the password is set twice.
+- `smtp-password`: the SMTP password only (for Gmail, an app password).
+- `alert-email-to`: the address that receives alerts.
+
 ### Claude Code usage
 
 Prometheus accepts OpenTelemetry metrics directly (`--web.enable-otlp-receiver`), so
