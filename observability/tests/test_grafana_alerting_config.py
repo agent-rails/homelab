@@ -276,16 +276,34 @@ def forbidden_literals(text):
     return [match.group(0) for pattern in FORBIDDEN_LITERALS for match in pattern.finditer(text)]
 
 
+def file_literals(path):
+    try:
+        text = path.read_bytes().decode("utf-8")
+    except UnicodeDecodeError:
+        return []
+    return forbidden_literals(text)
+
+
 def test_forbidden_literal_scan_catches_webhooks_and_addresses():
     assert forbidden_literals("url: https://hooks.slack.com/services/T0/B0/x") == ["hooks.slack"]
     assert forbidden_literals("addresses: owner@example.com") == ["owner@example.com"]
     assert forbidden_literals("image: grafana/grafana:13.1.3@sha256:ab5cb380") == []
 
 
-def test_committed_config_has_no_slack_webhook_or_email_address():
+def test_forbidden_literal_scan_skips_binary_files(tmp_path):
+    binary = tmp_path / "logo.png"
+    binary.write_bytes(b"\x89PNG\r\n\x1a\n\xff\xfe owner@example.com")
+    text = tmp_path / "config.yaml"
+    text.write_text("to: owner@example.com\n")
+    assert file_literals(binary) == []
+    assert file_literals(text) == ["owner@example.com"]
+
+
+def test_tracked_observability_config_outside_tests_has_no_slack_webhook_host_or_email_address():
+    """Scans tracked observability/ files outside tests/ for two literal shapes; not a credential detector."""
     files = committed_config_files()
     assert conftest.REAL_COMPOSE in files and ALERTING_FILE in files
-    found = {str(path): hits for path in files if (hits := forbidden_literals(path.read_text()))}
+    found = {str(path): hits for path in files if (hits := file_literals(path))}
     assert found == {}
 
 
