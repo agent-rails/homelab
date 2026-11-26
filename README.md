@@ -174,15 +174,21 @@ volumes. Grafana (default `admin`/`admin`) provisions the Prometheus datasource
 
 ### Alert email
 
-Grafana emails alerts over SMTP with mandatory STARTTLS and certificate checks.
-`docker compose up` fails to create Grafana until these files exist in
+Grafana emails alerts over SMTP with mandatory STARTTLS and certificate checks. It
+reads every SMTP setting from a Docker secret, so create these files in
 `~/.config/observability/`, each with mode `0600` and none committed:
 
-- `smtp.env`: `GF_SMTP_HOST=<host>:587`, `GF_SMTP_USER=<login>` and
-  `GF_SMTP_FROM_ADDRESS=<sender>`, one per line. Do not put the password or TLS
-  settings here; Compose sets those and Grafana exits if the password is set twice.
-- `smtp-password`: the SMTP password only (for Gmail, an app password).
-- `alert-email-to`: the address that receives alerts.
+| File | Content |
+|---|---|
+| `smtp-host` | `<host>:587` |
+| `smtp-user` | SMTP login |
+| `smtp-from-address` | Sender address |
+| `smtp-password` | SMTP password (for Gmail, an app password) |
+| `alert-email-to` | Address that receives alerts |
+
+Put one value per file. A trailing newline is fine: Grafana trims it. `docker compose
+up` checks only that each file exists. Nothing checks that a file is non-empty, so
+make sure each one holds its value before starting Grafana.
 
 ### Claude Code usage
 

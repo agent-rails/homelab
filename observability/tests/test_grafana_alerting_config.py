@@ -235,17 +235,29 @@ def test_contact_point_reads_email_recipient_from_secret_file():
     assert set(receiver["settings"]) == {"addresses", "subject", "message"}
 
 
-def test_compose_reads_smtp_settings_from_host_config_files():
+SMTP_SECRETS = {
+    "smtp_host": "smtp-host",
+    "smtp_user": "smtp-user",
+    "smtp_from_address": "smtp-from-address",
+    "smtp_password": "smtp-password",
+    "alert_email_to": "alert-email-to",
+}
+
+
+def test_compose_reads_smtp_settings_only_from_secret_files():
     compose = yaml.safe_load(conftest.REAL_COMPOSE.read_text())
     grafana = compose["services"]["grafana"]
-    assert grafana["secrets"] == ["smtp_password", "alert_email_to"]
-    assert compose["secrets"]["smtp_password"] == {"file": "${HOME}/.config/observability/smtp-password"}
-    assert compose["secrets"]["alert_email_to"] == {"file": "${HOME}/.config/observability/alert-email-to"}
-    assert grafana["env_file"] == ["${HOME}/.config/observability/smtp.env"]
+    assert "env_file" not in grafana
+    assert grafana["secrets"] == list(SMTP_SECRETS)
+    for name, filename in SMTP_SECRETS.items():
+        assert compose["secrets"][name] == {"file": "${HOME}/.config/observability/" + filename}, name
     assert grafana["environment"] == {
         "GF_SMTP_ENABLED": "true",
         "GF_SMTP_STARTTLS_POLICY": "MandatoryStartTLS",
         "GF_SMTP_SKIP_VERIFY": "false",
+        "GF_SMTP_HOST__FILE": "/run/secrets/smtp_host",
+        "GF_SMTP_USER__FILE": "/run/secrets/smtp_user",
+        "GF_SMTP_FROM_ADDRESS__FILE": "/run/secrets/smtp_from_address",
         "GF_SMTP_PASSWORD__FILE": "/run/secrets/smtp_password",
     }
     assert RECIPIENT_SECRET == "/run/secrets/alert_email_to"

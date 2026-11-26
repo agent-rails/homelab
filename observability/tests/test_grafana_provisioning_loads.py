@@ -107,16 +107,28 @@ def test_contact_point_reads_recipient_from_secret_file(grafana):
     assert receivers[0]["settings"]["addresses"] == DUMMY_RECIPIENT
 
 
-def test_smtp_settings_come_from_env_file_and_secret(stack, grafana):
+def test_file_interpolation_trims_trailing_newline_from_recipient(grafana):
+    raw = conftest.DUMMY_SECRETS["alert_email_to"]
+    assert raw.endswith("\n")
+    export = grafana.get("/api/v1/provisioning/contact-points/export?decrypt=true&format=json")
+    addresses = [r["settings"]["addresses"] for cp in export["contactPoints"] for r in cp["receivers"]]
+    assert addresses == [raw.rstrip("\n")]
+
+
+def test_smtp_settings_come_from_secret_files(stack, grafana):
     smtp = grafana.get("/api/admin/settings")["smtp"]
+    assert all(conftest.DUMMY_SECRETS[name].endswith("\n") for name in ("smtp_host", "smtp_user", "smtp_from_address"))
     assert smtp["enabled"] == "true"
-    assert smtp["host"] == "smtp.example.invalid:587"
-    assert smtp["user"] == "alerts@example.invalid"
-    assert smtp["from_address"] == "alerts@example.invalid"
+    assert smtp["host"] == conftest.DUMMY_SECRETS["smtp_host"].rstrip("\n")
+    assert smtp["user"] == conftest.DUMMY_SECRETS["smtp_user"].rstrip("\n")
+    assert smtp["from_address"] == conftest.DUMMY_SECRETS["smtp_from_address"].rstrip("\n")
     assert smtp["startTLS_policy"] == "MandatoryStartTLS"
     assert smtp["skip_verify"] == "false"
     assert smtp["password"] == "*********"
-    assert "Getting secret GF_SMTP_PASSWORD from /run/secrets/smtp_password" in grafana_logs(stack)
+    logs = grafana_logs(stack)
+    for variable in ("HOST", "USER", "FROM_ADDRESS", "PASSWORD"):
+        name = variable.lower()
+        assert f"Getting secret GF_SMTP_{variable} from /run/secrets/smtp_{name}" in logs, variable
 
 
 def test_notification_policy_routes_to_email(grafana):

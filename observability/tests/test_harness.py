@@ -46,23 +46,32 @@ def test_test_compose_injects_dummy_smtp_files_not_host_files():
 
     import yaml
 
+    names = ["smtp_host", "smtp_user", "smtp_from_address", "smtp_password", "alert_email_to"]
     real = yaml.safe_load(conftest.REAL_COMPOSE.read_text())
-    assert real["services"]["grafana"]["secrets"] == ["smtp_password", "alert_email_to"]
+    assert real["services"]["grafana"]["secrets"] == names
     stack = conftest.Stack(["prometheus", "grafana"], {"prometheus": [9090], "grafana": [3000]})
     stack.render()
     document = yaml.safe_load(stack.compose_file.read_text())
-    secret_files = {name: conftest.dummy_secret_path(stack.workdir, name) for name in ("smtp_password", "alert_email_to")}
-    env_file = conftest.dummy_env_path(stack.workdir, "grafana")
+    secret_files = {name: conftest.dummy_secret_path(stack.workdir, name) for name in names}
     assert document["secrets"] == {name: {"file": str(path)} for name, path in secret_files.items()}
-    assert document["services"]["grafana"]["secrets"] == ["smtp_password", "alert_email_to"]
-    assert document["services"]["grafana"]["env_file"] == [str(env_file)]
+    assert document["services"]["grafana"]["secrets"] == names
+    assert "env_file" not in document["services"]["grafana"]
     assert "secrets" not in document["services"]["prometheus"]
-    assert "env_file" not in document["services"]["prometheus"]
-    for path in (*secret_files.values(), env_file):
+    for path in secret_files.values():
         assert stat.S_IMODE(path.stat().st_mode) == 0o600
     assert secret_files["alert_email_to"].read_text().strip().endswith(".invalid")
-    assert "GF_SMTP_HOST=smtp.example.invalid:587" in env_file.read_text()
     assert ".config/observability" not in stack.compose_file.read_text()
+
+
+@pytest.mark.config
+def test_test_compose_rejects_service_env_files():
+    import yaml
+
+    real = yaml.safe_load(conftest.REAL_COMPOSE.read_text())
+    real["services"]["grafana"]["env_file"] = ["${HOME}/.config/observability/smtp.env"]
+    stack = conftest.Stack(["grafana"], {"grafana": [3000]})
+    with pytest.raises(AssertionError, match="env file"):
+        conftest.build_test_compose(real, ["grafana"], stack.host_ports, stack.workdir, "50m")
 
 
 @pytest.mark.integration

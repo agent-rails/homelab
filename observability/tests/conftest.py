@@ -22,9 +22,12 @@ REAL_PROMETHEUS = OBSERVABILITY_DIR / "prometheus.yaml"
 REQUIRED_DOCKER_CONTEXT = "orbstack"
 READY_TIMEOUT_S = 60
 SELF_CONTAINED_JOBS = ("otel-collector", "prometheus")
-DUMMY_SECRETS = {"smtp_password": "dummy-smtp-password\n", "alert_email_to": "alerts@example.invalid\n"}
-DUMMY_ENV_FILES = {
-    "grafana": "GF_SMTP_HOST=smtp.example.invalid:587\nGF_SMTP_USER=alerts@example.invalid\nGF_SMTP_FROM_ADDRESS=alerts@example.invalid\n"
+DUMMY_SECRETS = {
+    "smtp_host": "smtp.example.invalid:587\n",
+    "smtp_user": "login@example.invalid\n",
+    "smtp_from_address": "sender@example.invalid\n",
+    "smtp_password": "dummy-smtp-password\n",
+    "alert_email_to": "alerts@example.invalid\n",
 }
 
 
@@ -109,37 +112,28 @@ def dummy_secret_path(workdir, name):
     return workdir / f"{name}.secret"
 
 
-def dummy_env_path(workdir, service):
-    return workdir / f"{service}.env"
+def write_dummy_secrets(workdir, secrets):
+    for name, content in secrets.items():
+        path = dummy_secret_path(workdir, name)
+        path.touch(mode=0o600, exist_ok=False)
+        path.write_text(content)
 
 
-def write_private(path, content):
-    path.touch(mode=0o600, exist_ok=False)
-    path.write_text(content)
-
-
-def write_dummy_secrets(workdir):
-    for name, content in DUMMY_SECRETS.items():
-        write_private(dummy_secret_path(workdir, name), content)
-
-
-def write_dummy_env_files(workdir):
-    for service, content in DUMMY_ENV_FILES.items():
-        write_private(dummy_env_path(workdir, service), content)
-
-
-def build_test_compose(real, services, host_ports, workdir, prometheus_tmpfs_size):
+def build_test_compose(real, services, host_ports, workdir, prometheus_tmpfs_size, secrets=DUMMY_SECRETS, patches=None):
     selected = {}
     used_secrets = set()
     for name in services:
         service = copy.deepcopy(real["services"][name])
-        kept = [secret for secret in service.pop("secrets", []) if secret in DUMMY_SECRETS]
+        assert "env_file" not in service, f"{name} reads an env file the harness cannot replace"
+        patch = (patches or {}).get(name, {})
+        kept = [secret for secret in service.pop("secrets", []) if secret in secrets] + patch.get("secrets", [])
         if kept:
             service["secrets"] = kept
             used_secrets.update(kept)
-        if "env_file" in service:
-            assert name in DUMMY_ENV_FILES, f"no dummy env file for {name}"
-            service["env_file"] = [str(dummy_env_path(workdir, name))]
+        if "environment" in patch:
+            service["environment"] = {**service.get("environment", {}), **patch["environment"]}
+        if "extra_hosts" in patch:
+            service["extra_hosts"] = patch["extra_hosts"]
         service.pop("depends_on", None)
         service.pop("container_name", None)
         service.pop("profiles", None)
@@ -178,8 +172,10 @@ def build_test_prometheus(real_path, workdir):
 
 
 class Stack:
-    def __init__(self, services, container_ports, prometheus_tmpfs_size="200m", env=None):
+    def __init__(self, services, container_ports, prometheus_tmpfs_size="200m", env=None, secrets=None, patches=None):
         self.services = services
+        self.secrets = {**DUMMY_SECRETS, **(secrets or {})}
+        self.patches = patches or {}
         self.project = f"obstest-{uuid.uuid4().hex[:10]}"
         self.env = env or {}
         self.prometheus_tmpfs_size = prometheus_tmpfs_size
@@ -194,10 +190,9 @@ class Stack:
     def render(self):
         real = yaml.safe_load(REAL_COMPOSE.read_text())
         build_test_prometheus(REAL_PROMETHEUS, self.workdir)
-        write_dummy_secrets(self.workdir)
-        write_dummy_env_files(self.workdir)
+        write_dummy_secrets(self.workdir, self.secrets)
         document = build_test_compose(
-            real, self.services, self.host_ports, self.workdir, self.prometheus_tmpfs_size
+            real, self.services, self.host_ports, self.workdir, self.prometheus_tmpfs_size, self.secrets, self.patches
         )
         self.compose_file.write_text(yaml.safe_dump(document))
 

@@ -72,14 +72,18 @@ services:
       - ${PWD}/grafana/provisioning:/etc/grafana/provisioning:ro
       - ${PWD}/grafana/dashboards:/var/lib/grafana/dashboards:ro
       - grafana-data:/var/lib/grafana
-    env_file:
-      - ${HOME}/.config/observability/smtp.env
     environment:
       GF_SMTP_ENABLED: "true"
       GF_SMTP_STARTTLS_POLICY: MandatoryStartTLS
       GF_SMTP_SKIP_VERIFY: "false"
+      GF_SMTP_HOST__FILE: /run/secrets/smtp_host
+      GF_SMTP_USER__FILE: /run/secrets/smtp_user
+      GF_SMTP_FROM_ADDRESS__FILE: /run/secrets/smtp_from_address
       GF_SMTP_PASSWORD__FILE: /run/secrets/smtp_password
     secrets:
+      - smtp_host
+      - smtp_user
+      - smtp_from_address
       - smtp_password
       - alert_email_to
 
@@ -96,6 +100,12 @@ secrets:
     file: ${HOME}/.config/ai-gateway/mlx.token
   ai_gateway_ca:
     file: ${HOME}/.config/ai-gateway/data/caddy/pki/authorities/local/root.crt
+  smtp_host:
+    file: ${HOME}/.config/observability/smtp-host
+  smtp_user:
+    file: ${HOME}/.config/observability/smtp-user
+  smtp_from_address:
+    file: ${HOME}/.config/observability/smtp-from-address
   smtp_password:
     file: ${HOME}/.config/observability/smtp-password
   alert_email_to:
