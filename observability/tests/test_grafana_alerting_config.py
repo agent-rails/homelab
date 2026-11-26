@@ -302,20 +302,16 @@ def test_dollar_appears_only_in_file_interpolation():
     assert re.findall(r"\$[^\n]*", text) == ["$__file{%s}" % RECIPIENT_SECRET]
 
 
-def test_templates_render_label_values_only_through_escape():
+def test_email_templates_leave_html_escaping_to_grafana():
     config = load_alerting()
     contact_settings = config["contactPoints"][0]["receivers"][0]["settings"]
     texts = [t["template"] for t in config["templates"]]
     texts += [contact_settings["subject"], contact_settings["message"]]
-    escape_body = re.search(r'\{\{ define "agent\.esc" \}\}(.*?)\{\{ end \}\}', config["templates"][0]["template"])
-    assert escape_body
-    for char, entity in (("&", "&amp;"), ("<", "&lt;"), (">", "&gt;")):
-        assert f'reReplaceAll "{char}" "{entity}"' in escape_body.group(1)
-    assert escape_body.group(1).index('"&"') < escape_body.group(1).index('"<"')
     for text in texts:
+        assert "agent.esc" not in text
+        assert "reReplaceAll" not in text
+        assert "safeHtml" not in text
         for action in re.findall(r"\{\{-?\s*(.*?)\s*-?\}\}", text):
-            if re.search(r"\.(Labels|Annotations|CommonLabels|CommonAnnotations|GroupLabels|Name|Value)\b", action):
-                assert action.startswith('template "agent.esc"') or action.startswith("range") or action.startswith("if ne .Name"), action
             assert "ValueString" not in action, action
 
 

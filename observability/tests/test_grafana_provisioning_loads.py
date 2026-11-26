@@ -137,12 +137,12 @@ def test_notification_policy_routes_to_email(grafana):
     assert policy["group_by"] == ["grafana_folder", "alertname"]
 
 
-def test_template_escapes_hostile_label_values(grafana):
+def test_templates_render_hostile_values_verbatim_for_grafana_to_escape(grafana):
     template = provisioned_file()["templates"][0]
     alert = {
         "status": "firing",
-        "labels": {"alertname": "Tool errors <b>", "error_type": "<!channel>&<https://evil.example|click>"},
-        "annotations": {"summary": "summary <@U123>"},
+        "labels": {"alertname": "Tool errors <img src=x onerror=alert(1)>", "error_type": "<script>alert(1)</script>"},
+        "annotations": {"summary": 'summary " & <a href="javascript:alert(1)">x</a>'},
         "startsAt": "2026-11-24T00:00:00Z",
     }
     rendered = grafana.request(
@@ -152,13 +152,12 @@ def test_template_escapes_hostile_label_values(grafana):
     )
     assert not rendered.get("errors"), rendered
     outputs = {r["name"]: r["text"] for r in rendered["results"]}
-    text = outputs["agent.email.message"]
-    title = outputs["agent.email.subject"]
-    assert "error_type=&lt;!channel&gt;&amp;&lt;https://evil.example|click&gt;" in text
-    assert "summary &lt;@U123&gt;" in text
-    assert title == "[FIRING] Tool errors &lt;b&gt;"
-    for output in (text, title):
-        assert "<" not in output and ">" not in output
+    message = outputs["agent.email.message"]
+    assert "error_type=<script>alert(1)</script>" in message
+    assert 'summary " & <a href="javascript:alert(1)">x</a>' in message
+    assert outputs["agent.email.subject"] == "[FIRING] Tool errors <img src=x onerror=alert(1)>"
+    for output in outputs.values():
+        assert "&lt;" not in output and "&amp;" not in output
 
 
 def test_dashboard_provisioned_with_variables(grafana):

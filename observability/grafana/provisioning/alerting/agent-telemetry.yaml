@@ -342,8 +342,7 @@ templates:
   - orgId: 1
     name: agent-telemetry
     template: |
-      {{ define "agent.esc" }}{{ . | reReplaceAll "&" "&amp;" | reReplaceAll "<" "&lt;" | reReplaceAll ">" "&gt;" }}{{ end }}
-      {{ define "agent.email.subject" }}[{{ .Status | toUpper }}] {{ template "agent.esc" .CommonLabels.alertname }}{{ end }}
-      {{ define "agent.email.message" }}{{ range .Alerts }}{{ .Status }}:{{ range .Labels.SortedPairs }}{{ if ne .Name "alertname" }} {{ template "agent.esc" .Name }}={{ template "agent.esc" .Value }}{{ end }}{{ end }}
-      {{ template "agent.esc" .Annotations.summary }}
+      {{ define "agent.email.subject" }}[{{ .Status | toUpper }}] {{ .CommonLabels.alertname }}{{ end }}
+      {{ define "agent.email.message" }}{{ range .Alerts }}{{ .Status }}:{{ range .Labels.SortedPairs }}{{ if ne .Name "alertname" }} {{ .Name }}={{ .Value }}{{ end }}{{ end }}
+      {{ .Annotations.summary }}
       {{ end }}{{ end }}
