@@ -1,5 +1,6 @@
 import json
 import re
+import subprocess
 
 import pytest
 import yaml
@@ -11,6 +12,10 @@ pytestmark = pytest.mark.config
 ALERTING_FILE = conftest.OBSERVABILITY_DIR / "grafana/provisioning/alerting/agent-telemetry.yaml"
 DASHBOARD_FILE = conftest.OBSERVABILITY_DIR / "grafana/dashboards/agent-failures.json"
 RECIPIENT_SECRET = "/run/secrets/alert_email_to"
+FORBIDDEN_LITERALS = (
+    re.compile(r"hooks\.slack", re.IGNORECASE),
+    re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+"),
+)
 
 GOLDEN_METRICS = {
     "agent_api_requests_total",
@@ -244,6 +249,32 @@ def test_compose_reads_smtp_settings_from_host_config_files():
         "GF_SMTP_PASSWORD__FILE": "/run/secrets/smtp_password",
     }
     assert RECIPIENT_SECRET == "/run/secrets/alert_email_to"
+
+
+def committed_config_files():
+    listed = subprocess.run(
+        ["git", "-C", str(conftest.OBSERVABILITY_DIR), "ls-files", "-z", "--full-name", "."],
+        capture_output=True, text=True, check=True,
+    ).stdout
+    root = conftest.OBSERVABILITY_DIR.parent
+    return [root / name for name in listed.split("\0") if name and not name.startswith("observability/tests/")]
+
+
+def forbidden_literals(text):
+    return [match.group(0) for pattern in FORBIDDEN_LITERALS for match in pattern.finditer(text)]
+
+
+def test_forbidden_literal_scan_catches_webhooks_and_addresses():
+    assert forbidden_literals("url: https://hooks.slack.com/services/T0/B0/x") == ["hooks.slack"]
+    assert forbidden_literals("addresses: owner@example.com") == ["owner@example.com"]
+    assert forbidden_literals("image: grafana/grafana:13.1.3@sha256:ab5cb380") == []
+
+
+def test_committed_config_has_no_slack_webhook_or_email_address():
+    files = committed_config_files()
+    assert conftest.REAL_COMPOSE in files and ALERTING_FILE in files
+    found = {str(path): hits for path in files if (hits := forbidden_literals(path.read_text()))}
+    assert found == {}
 
 
 def test_policy_routes_everything_to_the_email_contact_point():
