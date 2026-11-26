@@ -320,19 +320,19 @@ groups:
 
 contactPoints:
   - orgId: 1
-    name: slack-dm
+    name: email-owner
     receivers:
-      - uid: agent-slack-dm
-        type: slack
+      - uid: agent-email
+        type: email
         disableResolveMessage: false
         settings:
-          url: $__file{/run/secrets/slack_webhook_url}
-          title: '{{ template "agent.slack.title" . }}'
-          text: '{{ template "agent.slack.text" . }}'
+          addresses: $__file{/run/secrets/alert_email_to}
+          subject: '{{ template "agent.email.subject" . }}'
+          message: '{{ template "agent.email.message" . }}'
 
 policies:
   - orgId: 1
-    receiver: slack-dm
+    receiver: email-owner
     group_by: [grafana_folder, alertname]
     group_wait: 30s
     group_interval: 5m
@@ -343,7 +343,7 @@ templates:
     name: agent-telemetry
     template: |
       {{ define "agent.esc" }}{{ . | reReplaceAll "&" "&amp;" | reReplaceAll "<" "&lt;" | reReplaceAll ">" "&gt;" }}{{ end }}
-      {{ define "agent.slack.title" }}[{{ .Status | toUpper }}] {{ template "agent.esc" .CommonLabels.alertname }}{{ end }}
-      {{ define "agent.slack.text" }}{{ range .Alerts }}{{ .Status }}:{{ range .Labels.SortedPairs }}{{ if ne .Name "alertname" }} {{ template "agent.esc" .Name }}={{ template "agent.esc" .Value }}{{ end }}{{ end }}
+      {{ define "agent.email.subject" }}[{{ .Status | toUpper }}] {{ template "agent.esc" .CommonLabels.alertname }}{{ end }}
+      {{ define "agent.email.message" }}{{ range .Alerts }}{{ .Status }}:{{ range .Labels.SortedPairs }}{{ if ne .Name "alertname" }} {{ template "agent.esc" .Name }}={{ template "agent.esc" .Value }}{{ end }}{{ end }}
       {{ template "agent.esc" .Annotations.summary }}
       {{ end }}{{ end }}

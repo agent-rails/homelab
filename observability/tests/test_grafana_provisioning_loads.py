@@ -19,7 +19,7 @@ STACK = {
     "ports": {"prometheus": [9090], "otel-collector": [4318, 13133], "grafana": [3000]},
 }
 ALERTING_FILE = conftest.OBSERVABILITY_DIR / "grafana/provisioning/alerting/agent-telemetry.yaml"
-DUMMY_WEBHOOK = conftest.DUMMY_SECRETS["slack_webhook_url"].strip()
+DUMMY_RECIPIENT = conftest.DUMMY_SECRETS["alert_email_to"].strip()
 GRAFANA_READY_TIMEOUT_S = 90
 EVALUATION_TIMEOUT_S = 150
 ERROR_RATE_RULE = "agent-api-error-rate"
@@ -99,16 +99,29 @@ def test_alert_rules_provisioned_as_in_file(grafana):
         assert loaded[uid]["isPaused"] is rule["isPaused"], uid
 
 
-def test_contact_point_reads_webhook_from_secret_file(grafana):
+def test_contact_point_reads_recipient_from_secret_file(grafana):
     export = grafana.get("/api/v1/provisioning/contact-points/export?decrypt=true&format=json")
-    receivers = [r for cp in export["contactPoints"] for r in cp["receivers"] if r["uid"] == "agent-slack-dm"]
+    receivers = [r for cp in export["contactPoints"] for r in cp["receivers"] if r["uid"] == "agent-email"]
     assert len(receivers) == 1
-    assert receivers[0]["settings"]["url"] == DUMMY_WEBHOOK
+    assert receivers[0]["type"] == "email"
+    assert receivers[0]["settings"]["addresses"] == DUMMY_RECIPIENT
 
 
-def test_notification_policy_routes_to_slack(grafana):
+def test_smtp_settings_come_from_env_file_and_secret(stack, grafana):
+    smtp = grafana.get("/api/admin/settings")["smtp"]
+    assert smtp["enabled"] == "true"
+    assert smtp["host"] == "smtp.example.invalid:587"
+    assert smtp["user"] == "alerts@example.invalid"
+    assert smtp["from_address"] == "alerts@example.invalid"
+    assert smtp["startTLS_policy"] == "MandatoryStartTLS"
+    assert smtp["skip_verify"] == "false"
+    assert smtp["password"] == "*********"
+    assert "Getting secret GF_SMTP_PASSWORD from /run/secrets/smtp_password" in grafana_logs(stack)
+
+
+def test_notification_policy_routes_to_email(grafana):
     policy = grafana.get("/api/v1/provisioning/policies")
-    assert policy["receiver"] == "slack-dm"
+    assert policy["receiver"] == "email-owner"
     assert policy["group_by"] == ["grafana_folder", "alertname"]
 
 
@@ -127,8 +140,8 @@ def test_template_escapes_hostile_label_values(grafana):
     )
     assert not rendered.get("errors"), rendered
     outputs = {r["name"]: r["text"] for r in rendered["results"]}
-    text = outputs["agent.slack.text"]
-    title = outputs["agent.slack.title"]
+    text = outputs["agent.email.message"]
+    title = outputs["agent.email.subject"]
     assert "error_type=&lt;!channel&gt;&amp;&lt;https://evil.example|click&gt;" in text
     assert "summary &lt;@U123&gt;" in text
     assert title == "[FIRING] Tool errors &lt;b&gt;"

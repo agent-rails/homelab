@@ -10,7 +10,7 @@ pytestmark = pytest.mark.config
 
 ALERTING_FILE = conftest.OBSERVABILITY_DIR / "grafana/provisioning/alerting/agent-telemetry.yaml"
 DASHBOARD_FILE = conftest.OBSERVABILITY_DIR / "grafana/dashboards/agent-failures.json"
-WEBHOOK_SECRET = "/run/secrets/slack_webhook_url"
+RECIPIENT_SECRET = "/run/secrets/alert_email_to"
 
 GOLDEN_METRICS = {
     "agent_api_requests_total",
@@ -219,26 +219,34 @@ def test_alert_windows_outlast_pending_period():
             assert int(window) >= 15, rule["uid"]
 
 
-def test_contact_point_reads_slack_webhook_from_secret_file():
+def test_contact_point_reads_email_recipient_from_secret_file():
     config = load_alerting()
     receivers = [r for cp in config["contactPoints"] for r in cp["receivers"]]
     assert len(receivers) == 1
     receiver = receivers[0]
-    assert receiver["type"] == "slack"
-    assert receiver["settings"]["url"] == "$__file{%s}" % WEBHOOK_SECRET
-    assert not re.search(r"hooks\.slack\.com", ALERTING_FILE.read_text())
+    assert receiver["uid"] == "agent-email"
+    assert receiver["type"] == "email"
+    assert receiver["settings"]["addresses"] == "$__file{%s}" % RECIPIENT_SECRET
+    assert set(receiver["settings"]) == {"addresses", "subject", "message"}
 
 
-def test_compose_mounts_webhook_secret_from_host_config_file():
+def test_compose_reads_smtp_settings_from_host_config_files():
     compose = yaml.safe_load(conftest.REAL_COMPOSE.read_text())
-    assert compose["services"]["grafana"]["secrets"] == ["slack_webhook_url"]
-    assert compose["secrets"]["slack_webhook_url"] == {
-        "file": "${HOME}/.config/observability/slack-webhook.url"
+    grafana = compose["services"]["grafana"]
+    assert grafana["secrets"] == ["smtp_password", "alert_email_to"]
+    assert compose["secrets"]["smtp_password"] == {"file": "${HOME}/.config/observability/smtp-password"}
+    assert compose["secrets"]["alert_email_to"] == {"file": "${HOME}/.config/observability/alert-email-to"}
+    assert grafana["env_file"] == ["${HOME}/.config/observability/smtp.env"]
+    assert grafana["environment"] == {
+        "GF_SMTP_ENABLED": "true",
+        "GF_SMTP_STARTTLS_POLICY": "MandatoryStartTLS",
+        "GF_SMTP_SKIP_VERIFY": "false",
+        "GF_SMTP_PASSWORD__FILE": "/run/secrets/smtp_password",
     }
-    assert WEBHOOK_SECRET == "/run/secrets/slack_webhook_url"
+    assert RECIPIENT_SECRET == "/run/secrets/alert_email_to"
 
 
-def test_policy_routes_everything_to_the_slack_contact_point():
+def test_policy_routes_everything_to_the_email_contact_point():
     config = load_alerting()
     contact_point = config["contactPoints"][0]["name"]
     assert len(config["policies"]) == 1
@@ -248,14 +256,14 @@ def test_policy_routes_everything_to_the_slack_contact_point():
 
 def test_dollar_appears_only_in_file_interpolation():
     text = ALERTING_FILE.read_text()
-    assert re.findall(r"\$[^\n]*", text) == ["$__file{%s}" % WEBHOOK_SECRET]
+    assert re.findall(r"\$[^\n]*", text) == ["$__file{%s}" % RECIPIENT_SECRET]
 
 
 def test_templates_render_label_values_only_through_escape():
     config = load_alerting()
     contact_settings = config["contactPoints"][0]["receivers"][0]["settings"]
     texts = [t["template"] for t in config["templates"]]
-    texts += [contact_settings["title"], contact_settings["text"]]
+    texts += [contact_settings["subject"], contact_settings["message"]]
     escape_body = re.search(r'\{\{ define "agent\.esc" \}\}(.*?)\{\{ end \}\}', config["templates"][0]["template"])
     assert escape_body
     for char, entity in (("&", "&amp;"), ("<", "&lt;"), (">", "&gt;")):

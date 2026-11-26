@@ -22,7 +22,10 @@ REAL_PROMETHEUS = OBSERVABILITY_DIR / "prometheus.yaml"
 REQUIRED_DOCKER_CONTEXT = "orbstack"
 READY_TIMEOUT_S = 60
 SELF_CONTAINED_JOBS = ("otel-collector", "prometheus")
-DUMMY_SECRETS = {"slack_webhook_url": "https://hooks.slack.invalid/services/T000/B000/dummy\n"}
+DUMMY_SECRETS = {"smtp_password": "dummy-smtp-password\n", "alert_email_to": "alerts@example.invalid\n"}
+DUMMY_ENV_FILES = {
+    "grafana": "GF_SMTP_HOST=smtp.example.invalid:587\nGF_SMTP_USER=alerts@example.invalid\nGF_SMTP_FROM_ADDRESS=alerts@example.invalid\n"
+}
 
 
 def assert_docker_context():
@@ -106,11 +109,23 @@ def dummy_secret_path(workdir, name):
     return workdir / f"{name}.secret"
 
 
+def dummy_env_path(workdir, service):
+    return workdir / f"{service}.env"
+
+
+def write_private(path, content):
+    path.touch(mode=0o600, exist_ok=False)
+    path.write_text(content)
+
+
 def write_dummy_secrets(workdir):
     for name, content in DUMMY_SECRETS.items():
-        path = dummy_secret_path(workdir, name)
-        path.touch(mode=0o600, exist_ok=False)
-        path.write_text(content)
+        write_private(dummy_secret_path(workdir, name), content)
+
+
+def write_dummy_env_files(workdir):
+    for service, content in DUMMY_ENV_FILES.items():
+        write_private(dummy_env_path(workdir, service), content)
 
 
 def build_test_compose(real, services, host_ports, workdir, prometheus_tmpfs_size):
@@ -122,6 +137,9 @@ def build_test_compose(real, services, host_ports, workdir, prometheus_tmpfs_siz
         if kept:
             service["secrets"] = kept
             used_secrets.update(kept)
+        if "env_file" in service:
+            assert name in DUMMY_ENV_FILES, f"no dummy env file for {name}"
+            service["env_file"] = [str(dummy_env_path(workdir, name))]
         service.pop("depends_on", None)
         service.pop("container_name", None)
         service.pop("profiles", None)
@@ -177,6 +195,7 @@ class Stack:
         real = yaml.safe_load(REAL_COMPOSE.read_text())
         build_test_prometheus(REAL_PROMETHEUS, self.workdir)
         write_dummy_secrets(self.workdir)
+        write_dummy_env_files(self.workdir)
         document = build_test_compose(
             real, self.services, self.host_ports, self.workdir, self.prometheus_tmpfs_size
         )

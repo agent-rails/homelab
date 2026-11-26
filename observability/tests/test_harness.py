@@ -41,22 +41,27 @@ def test_test_compose_never_publishes_live_ports_or_secrets():
 
 
 @pytest.mark.config
-def test_test_compose_injects_dummy_webhook_not_host_secret():
+def test_test_compose_injects_dummy_smtp_files_not_host_files():
     import stat
 
     import yaml
 
     real = yaml.safe_load(conftest.REAL_COMPOSE.read_text())
-    assert real["services"]["grafana"]["secrets"] == ["slack_webhook_url"]
+    assert real["services"]["grafana"]["secrets"] == ["smtp_password", "alert_email_to"]
     stack = conftest.Stack(["prometheus", "grafana"], {"prometheus": [9090], "grafana": [3000]})
     stack.render()
     document = yaml.safe_load(stack.compose_file.read_text())
-    secret_file = conftest.dummy_secret_path(stack.workdir, "slack_webhook_url")
-    assert document["secrets"] == {"slack_webhook_url": {"file": str(secret_file)}}
-    assert document["services"]["grafana"]["secrets"] == ["slack_webhook_url"]
+    secret_files = {name: conftest.dummy_secret_path(stack.workdir, name) for name in ("smtp_password", "alert_email_to")}
+    env_file = conftest.dummy_env_path(stack.workdir, "grafana")
+    assert document["secrets"] == {name: {"file": str(path)} for name, path in secret_files.items()}
+    assert document["services"]["grafana"]["secrets"] == ["smtp_password", "alert_email_to"]
+    assert document["services"]["grafana"]["env_file"] == [str(env_file)]
     assert "secrets" not in document["services"]["prometheus"]
-    assert stat.S_IMODE(secret_file.stat().st_mode) == 0o600
-    assert secret_file.read_text().startswith("https://hooks.slack.invalid/")
+    assert "env_file" not in document["services"]["prometheus"]
+    for path in (*secret_files.values(), env_file):
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    assert secret_files["alert_email_to"].read_text().strip().endswith(".invalid")
+    assert "GF_SMTP_HOST=smtp.example.invalid:587" in env_file.read_text()
     assert ".config/observability" not in stack.compose_file.read_text()
 
 
